@@ -297,12 +297,24 @@ async def docling_get_markdown(
     return markdown
 
 
+# ─── Health Check ─────────────────────────────────────────────────────────────
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request) -> dict:
+    """Health check endpoint for Railway deployment."""
+    return {"status": "ok", "server": "docling_mcp"}
+
+
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
+    import os
+
     transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+    port = int(os.environ.get("PORT", 8000))
+
     if transport == "http":
-        mcp.run(transport="streamable_http", port=8000)
+        mcp.run(transport="streamable_http", port=port)
     else:
         mcp.run()
