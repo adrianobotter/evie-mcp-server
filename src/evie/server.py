@@ -37,7 +37,7 @@ def _create_auth() -> RemoteAuthProvider | None:
     return RemoteAuthProvider(
         token_verifier=token_verifier,
         authorization_servers=[AnyHttpUrl(f"{supabase_url}/auth/v1")],
-        resource_server_url=os.environ.get(
+        base_url=os.environ.get(
             "EVIE_BASE_URL", "https://evie-mcp.railway.app"
         ),
     )
@@ -121,7 +121,7 @@ def main():
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-    app = mcp.streamable_http_app()
+    app = mcp.http_app()
     uvicorn.run(app, host=host, port=port)
 
 
