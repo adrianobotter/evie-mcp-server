@@ -17,9 +17,14 @@ from urllib.parse import urlencode
 import httpx
 from fastmcp.server.auth import OAuthProvider
 from fastmcp.server.auth.auth import ClientRegistrationOptions
-from mcp.server.auth.provider import AuthorizationParams
+from mcp.server.auth.provider import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    RefreshToken,
+)
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, AnyUrl
 
 
 @dataclass
@@ -35,35 +40,35 @@ class _PendingAuth:
 
 
 @dataclass
-class _AuthCode:
-    """An issued authorization code, not yet exchanged."""
+class _StoredAuthCode:
+    """An issued authorization code with Supabase tokens attached."""
     code: str
     client_id: str
     redirect_uri: str
     code_challenge: str
-    scopes: list[str] | None
+    scopes: list[str]
     supabase_access_token: str
     supabase_refresh_token: str
     created_at: float = field(default_factory=time.time)
 
 
 @dataclass
-class _IssuedToken:
+class _StoredToken:
     """An access token issued by EVIE, wrapping a Supabase token."""
     token: str
     client_id: str
-    scopes: list[str] | None
+    scopes: list[str]
     supabase_access_token: str
     created_at: float = field(default_factory=time.time)
     expires_in: int = 3600
 
 
 @dataclass
-class _IssuedRefresh:
+class _StoredRefresh:
     """A refresh token issued by EVIE."""
     token: str
     client_id: str
-    scopes: list[str] | None
+    scopes: list[str]
     supabase_refresh_token: str
     created_at: float = field(default_factory=time.time)
 
@@ -72,9 +77,9 @@ class SupabaseOAuthProvider(OAuthProvider):
     """OAuth AS that delegates authentication to Supabase.
 
     The EVIE server becomes its own OAuth AS (serving /.well-known/oauth-authorization-server,
-    /authorize, /token, /register). The /authorize endpoint redirects to Supabase's OAuth
-    login page. After Supabase authenticates the user, it redirects back to EVIE's callback,
-    which completes the MCP OAuth flow.
+    /authorize, /token, /register). The /authorize endpoint redirects to our login page.
+    After the user authenticates via Supabase email/password, we issue an auth code
+    and redirect back to Claude.ai.
     """
 
     def __init__(self, supabase_url: str, supabase_anon_key: str, base_url: str):
@@ -94,9 +99,9 @@ class SupabaseOAuthProvider(OAuthProvider):
         # In-memory stores (sufficient for single-instance Railway deploy)
         self._clients: dict[str, OAuthClientInformationFull] = {}
         self._pending: dict[str, _PendingAuth] = {}  # keyed by supabase_state
-        self._auth_codes: dict[str, _AuthCode] = {}  # keyed by code
-        self._tokens: dict[str, _IssuedToken] = {}  # keyed by token
-        self._refreshes: dict[str, _IssuedRefresh] = {}  # keyed by refresh token
+        self._auth_codes: dict[str, _StoredAuthCode] = {}  # keyed by code
+        self._tokens: dict[str, _StoredToken] = {}  # keyed by token
+        self._refreshes: dict[str, _StoredRefresh] = {}  # keyed by refresh token
 
     # ── Client Registration (RFC 7591) ───────────────────────────────────────
 
@@ -116,12 +121,7 @@ class SupabaseOAuthProvider(OAuthProvider):
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
-        """Redirect to EVIE's own login page for email/password auth.
-
-        We store the MCP authorization params, then redirect the user to
-        our /login page. After successful login, we issue an auth code
-        and redirect back to Claude.ai.
-        """
+        """Redirect to EVIE's own login page for email/password auth."""
         supabase_state = secrets.token_urlsafe(32)
 
         self._pending[supabase_state] = _PendingAuth(
@@ -133,7 +133,6 @@ class SupabaseOAuthProvider(OAuthProvider):
             supabase_state=supabase_state,
         )
 
-        # Redirect to our own login page
         login_params = urlencode({"state": supabase_state})
         return f"{self._base_url_str}/login?{login_params}"
 
@@ -167,12 +166,13 @@ class SupabaseOAuthProvider(OAuthProvider):
 
         # Issue our own authorization code
         evie_code = secrets.token_urlsafe(48)
-        self._auth_codes[evie_code] = _AuthCode(
+        scopes = pending.scopes or ["evidence:read"]
+        self._auth_codes[evie_code] = _StoredAuthCode(
             code=evie_code,
             client_id=pending.client_id,
             redirect_uri=pending.redirect_uri,
             code_challenge=pending.code_challenge,
-            scopes=pending.scopes,
+            scopes=scopes,
             supabase_access_token=token_data["access_token"],
             supabase_refresh_token=token_data.get("refresh_token", ""),
         )
@@ -187,82 +187,106 @@ class SupabaseOAuthProvider(OAuthProvider):
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
-    ) -> _AuthCode | None:
-        ac = self._auth_codes.get(authorization_code)
-        if not ac:
+    ) -> AuthorizationCode | None:
+        stored = self._auth_codes.get(authorization_code)
+        if not stored:
             return None
-        if ac.client_id != client.client_id:
+        if stored.client_id != client.client_id:
             return None
         # Expire after 10 minutes
-        if time.time() - ac.created_at > 600:
+        if time.time() - stored.created_at > 600:
             self._auth_codes.pop(authorization_code, None)
             return None
-        return ac
+        # Return the SDK AuthorizationCode type the framework expects
+        return AuthorizationCode(
+            code=stored.code,
+            client_id=stored.client_id,
+            redirect_uri=AnyUrl(stored.redirect_uri),
+            redirect_uri_provided_explicitly=True,
+            code_challenge=stored.code_challenge,
+            scopes=stored.scopes,
+            expires_at=stored.created_at + 600,
+        )
 
     async def exchange_authorization_code(
-        self, client: OAuthClientInformationFull, authorization_code: _AuthCode
+        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        # Remove the code (single use)
-        self._auth_codes.pop(authorization_code.code, None)
+        # Retrieve the stored code to get Supabase tokens
+        stored = self._auth_codes.pop(authorization_code.code, None)
+        if not stored:
+            raise ValueError("Authorization code not found")
 
         # Issue EVIE tokens that wrap the Supabase token
         access_tok = secrets.token_urlsafe(48)
         refresh_tok = secrets.token_urlsafe(48)
         expires_in = 3600
+        scopes = authorization_code.scopes or ["evidence:read"]
 
-        self._tokens[access_tok] = _IssuedToken(
+        self._tokens[access_tok] = _StoredToken(
             token=access_tok,
             client_id=client.client_id,
-            scopes=authorization_code.scopes,
-            supabase_access_token=authorization_code.supabase_access_token,
+            scopes=scopes,
+            supabase_access_token=stored.supabase_access_token,
             expires_in=expires_in,
         )
-        self._refreshes[refresh_tok] = _IssuedRefresh(
+        self._refreshes[refresh_tok] = _StoredRefresh(
             token=refresh_tok,
             client_id=client.client_id,
-            scopes=authorization_code.scopes,
-            supabase_refresh_token=authorization_code.supabase_refresh_token,
+            scopes=scopes,
+            supabase_refresh_token=stored.supabase_refresh_token,
         )
 
         return OAuthToken(
             access_token=access_tok,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=" ".join(authorization_code.scopes) if authorization_code.scopes else None,
+            scope=" ".join(scopes) if scopes else None,
             refresh_token=refresh_tok,
         )
 
     # ── Token Verification ───────────────────────────────────────────────────
 
-    async def load_access_token(self, token: str) -> _IssuedToken | None:
-        issued = self._tokens.get(token)
-        if not issued:
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        stored = self._tokens.get(token)
+        if not stored:
             return None
-        if time.time() - issued.created_at > issued.expires_in:
+        expires_at = int(stored.created_at + stored.expires_in)
+        if time.time() > expires_at:
             self._tokens.pop(token, None)
             return None
-        return issued
+        return AccessToken(
+            token=stored.token,
+            client_id=stored.client_id,
+            scopes=stored.scopes,
+            expires_at=expires_at,
+        )
 
     # ── Refresh Token ────────────────────────────────────────────────────────
 
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
-    ) -> _IssuedRefresh | None:
-        issued = self._refreshes.get(refresh_token)
-        if not issued or issued.client_id != client.client_id:
+    ) -> RefreshToken | None:
+        stored = self._refreshes.get(refresh_token)
+        if not stored or stored.client_id != client.client_id:
             return None
-        return issued
+        return RefreshToken(
+            token=stored.token,
+            client_id=stored.client_id,
+            scopes=stored.scopes,
+        )
 
     async def exchange_refresh_token(
-        self, client: OAuthClientInformationFull, refresh_token: _IssuedRefresh,
+        self, client: OAuthClientInformationFull, refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        # Remove old refresh token (rotation)
-        self._refreshes.pop(refresh_token.token, None)
+        # Retrieve stored refresh to get Supabase token
+        stored = self._refreshes.pop(refresh_token.token, None)
+        if not stored:
+            raise ValueError("Refresh token not found")
 
         # Refresh the Supabase token
         supabase_access = ""
-        supabase_refresh = refresh_token.supabase_refresh_token
+        supabase_refresh = stored.supabase_refresh_token
         if supabase_refresh:
             async with httpx.AsyncClient() as http:
                 resp = await http.post(
@@ -282,18 +306,19 @@ class SupabaseOAuthProvider(OAuthProvider):
         new_access = secrets.token_urlsafe(48)
         new_refresh = secrets.token_urlsafe(48)
         expires_in = 3600
+        new_scopes = scopes or stored.scopes or ["evidence:read"]
 
-        self._tokens[new_access] = _IssuedToken(
+        self._tokens[new_access] = _StoredToken(
             token=new_access,
             client_id=client.client_id,
-            scopes=scopes or refresh_token.scopes,
+            scopes=new_scopes,
             supabase_access_token=supabase_access,
             expires_in=expires_in,
         )
-        self._refreshes[new_refresh] = _IssuedRefresh(
+        self._refreshes[new_refresh] = _StoredRefresh(
             token=new_refresh,
             client_id=client.client_id,
-            scopes=scopes or refresh_token.scopes,
+            scopes=new_scopes,
             supabase_refresh_token=supabase_refresh,
         )
 
@@ -301,21 +326,23 @@ class SupabaseOAuthProvider(OAuthProvider):
             access_token=new_access,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=" ".join(scopes) if scopes else None,
+            scope=" ".join(new_scopes) if new_scopes else None,
             refresh_token=new_refresh,
         )
 
     # ── Revocation ───────────────────────────────────────────────────────────
 
-    async def revoke_token(self, token: _IssuedToken | _IssuedRefresh) -> None:
-        if isinstance(token, _IssuedToken):
+    async def revoke_token(
+        self, token: AccessToken | RefreshToken,
+    ) -> None:
+        if isinstance(token, AccessToken):
             self._tokens.pop(token.token, None)
-        elif isinstance(token, _IssuedRefresh):
+        elif isinstance(token, RefreshToken):
             self._refreshes.pop(token.token, None)
 
     # ── Helper: resolve Supabase token from EVIE token ───────────────────────
 
     def get_supabase_token(self, evie_token: str) -> str | None:
         """Look up the Supabase access token for a given EVIE access token."""
-        issued = self._tokens.get(evie_token)
-        return issued.supabase_access_token if issued else None
+        stored = self._tokens.get(evie_token)
+        return stored.supabase_access_token if stored else None
