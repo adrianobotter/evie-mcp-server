@@ -8,22 +8,38 @@ Thin query layer over Supabase — no PDF processing, no ML, no Docling.
 import os
 
 from fastmcp import FastMCP
-from fastmcp.server.auth import OAuthProvider
+from fastmcp.server.auth import RemoteAuthProvider
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+from pydantic import AnyHttpUrl
 
 from .tools import register_tools
 
 
-# ─── OAuth provider (Supabase as identity backend) ────────────────────────────
+# ─── Auth (Supabase as identity backend) ─────────────────────────────────────
 
-def _create_auth() -> OAuthProvider | None:
-    """Create OAuth provider if Supabase OAuth env vars are set."""
+def _create_auth() -> RemoteAuthProvider | None:
+    """Create auth provider that delegates to Supabase for OAuth.
+
+    JWTVerifier validates Supabase JWTs at the FastMCP layer (Layer 1).
+    RemoteAuthProvider tells Claude.ai Connector where to redirect for OAuth.
+    """
     supabase_url = os.environ.get("SUPABASE_URL")
     if not supabase_url:
         return None
-    return OAuthProvider(
-        base_url=os.environ.get("EVIE_BASE_URL", "https://evie-mcp.railway.app"),
-        issuer_url=f"{supabase_url}/auth/v1",
+
+    token_verifier = JWTVerifier(
+        jwks_uri=f"{supabase_url}/auth/v1/.well-known/jwks.json",
+        issuer=f"{supabase_url}/auth/v1",
+        audience="authenticated",
         required_scopes=["evidence:read"],
+    )
+
+    return RemoteAuthProvider(
+        token_verifier=token_verifier,
+        authorization_servers=[AnyHttpUrl(f"{supabase_url}/auth/v1")],
+        resource_server_url=os.environ.get(
+            "EVIE_BASE_URL", "https://evie-mcp.railway.app"
+        ),
     )
 
 
