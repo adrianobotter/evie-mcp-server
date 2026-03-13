@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import RemoteAuthProvider
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from pydantic import AnyHttpUrl
+from starlette.responses import JSONResponse
 
 from .tools import register_tools
 
@@ -65,15 +66,15 @@ register_tools(mcp)
 # ─── Health check ─────────────────────────────────────────────────────────────
 
 @mcp.custom_route("/health", methods=["GET"])
-async def health_check(request) -> dict:
-    return {"status": "ok", "server": "evie_mcp"}
+async def health_check(request):
+    return JSONResponse({"status": "ok", "server": "evie_mcp"})
 
 
 # ─── Well-known MCP server card ──────────────────────────────────────────────
 
 @mcp.custom_route("/.well-known/mcp.json", methods=["GET"])
-async def mcp_server_card(request) -> dict:
-    return {
+async def mcp_server_card(request):
+    return JSONResponse({
         "name": "EVIE — Clinical Evidence",
         "description": (
             "Access governed clinical trial evidence with mandatory context envelopes. "
@@ -103,7 +104,7 @@ async def mcp_server_card(request) -> dict:
                 "description": "Get adverse event data for a trial",
             },
         ],
-    }
+    })
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
