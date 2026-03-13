@@ -69,43 +69,6 @@ async def health_check(request) -> dict:
     return {"status": "ok", "server": "evie_mcp"}
 
 
-# ─── Well-known MCP server card ──────────────────────────────────────────────
-
-@mcp.custom_route("/.well-known/mcp.json", methods=["GET"])
-async def mcp_server_card(request) -> dict:
-    return {
-        "name": "EVIE — Clinical Evidence",
-        "description": (
-            "Access governed clinical trial evidence with mandatory context envelopes. "
-            "Every result includes population constraints, interpretation guardrails, "
-            "and safety statements."
-        ),
-        "auth": {"type": "oauth2"},
-        "tools": [
-            {
-                "name": "list_trials",
-                "description": "List clinical trials available to you",
-            },
-            {
-                "name": "get_trial_summary",
-                "description": "Get primary endpoint overview for a trial",
-            },
-            {
-                "name": "get_evidence",
-                "description": "Search clinical evidence with natural language",
-            },
-            {
-                "name": "get_evidence_detail",
-                "description": "Get full evidence object with context envelope",
-            },
-            {
-                "name": "get_safety_data",
-                "description": "Get adverse event data for a trial",
-            },
-        ],
-    }
-
-
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
