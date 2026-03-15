@@ -1,7 +1,6 @@
 """Tests for EVIE HCP authentication and verification (Layer 3)."""
 
 from unittest.mock import patch, MagicMock
-import httpx
 import pytest
 
 from src.evie.auth import AuthError, AuthenticatedHCP, verify_hcp

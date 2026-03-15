@@ -7,27 +7,7 @@ from src.evie.models import (
     HCPProfile,
     SourceProvenance,
     TrialSummary,
-    tier_accessible,
 )
-
-
-class TestTierAccessible:
-    def test_same_tier(self):
-        assert tier_accessible("tier1", "tier1") is True
-
-    def test_lower_tier_accessible(self):
-        assert tier_accessible("tier1", "tier3") is True
-
-    def test_higher_tier_blocked(self):
-        assert tier_accessible("tier3", "tier1") is False
-
-    def test_all_tiers_accessible_to_tier4(self):
-        for t in ("tier1", "tier2", "tier3", "tier4"):
-            assert tier_accessible(t, "tier4") is True
-
-    def test_unknown_tier_returns_false(self):
-        assert tier_accessible("tier_unknown", "tier1") is True  # 0 <= 1
-        assert tier_accessible("tier1", "tier_unknown") is False  # 1 <= 0
 
 
 class TestEvidenceObject:

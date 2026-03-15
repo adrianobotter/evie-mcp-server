@@ -7,8 +7,6 @@ standard OAuth AS so the Connector can complete the OAuth flow:
     Claude.ai  ──OAuth──▶  EVIE MCP Server  ──Supabase Auth──▶  Supabase
 """
 
-import hashlib
-import os
 import secrets
 import time
 from dataclasses import dataclass, field

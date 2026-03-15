@@ -2,7 +2,6 @@
 
 import json
 import time
-from typing import Optional
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
@@ -150,8 +149,8 @@ def register_tools(mcp: FastMCP) -> None:
     )
     async def get_evidence(
         query: str,
-        trial_id: Optional[str] = None,
-        object_class: Optional[str] = None,
+        trial_id: str | None = None,
+        object_class: str | None = None,
     ) -> str:
         """Search across clinical evidence using natural language.
 
