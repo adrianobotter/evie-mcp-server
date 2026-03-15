@@ -21,7 +21,10 @@ def get_client(access_token: Optional[str] = None) -> Client:
     anon_key = os.environ["SUPABASE_ANON_KEY"]
     client = create_client(url, anon_key)
     if access_token:
-        client.auth.set_session(access_token, "")
+        # Set the user JWT on the PostgREST client directly so RLS sees the
+        # authenticated user.  client.auth.set_session() does NOT propagate
+        # the token to the REST headers — queries would run as anon.
+        client.postgrest.auth(access_token)
     return client
 
 
@@ -163,7 +166,9 @@ def search_evidence(
     if object_class:
         q = q.eq("object_class", object_class)
 
-    result = q.limit(20).text_search("search_vector", query, options={"config": "english"}).execute()
+    result = q.limit(20).text_search(
+        "search_vector", query, options={"type": "plain", "config": "english"}
+    ).execute()
 
     pairs = []
     for row in result.data:
