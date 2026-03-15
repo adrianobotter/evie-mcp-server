@@ -5,6 +5,7 @@ Governed clinical evidence for HCPs via Claude.ai Connector.
 Thin query layer over Supabase — no PDF processing, no ML.
 """
 
+import html
 import os
 
 from fastmcp import FastMCP
@@ -132,7 +133,7 @@ async def login_submit(request):
         )
         return RedirectResponse(redirect_url, status_code=303)
     except ValueError as e:
-        error_html = '<div class="error">%s</div>' % str(e)
+        error_html = '<div class="error">%s</div>' % html.escape(str(e))
         return HTMLResponse(_LOGIN_HTML % (error_html, state), status_code=400)
 
 
