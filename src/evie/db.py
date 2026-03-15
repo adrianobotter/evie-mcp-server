@@ -163,7 +163,7 @@ def search_evidence(
     if object_class:
         q = q.eq("object_class", object_class)
 
-    result = q.text_search("search_vector", query, options={"config": "english"}).limit(20).execute()
+    result = q.limit(20).text_search("search_vector", query, options={"config": "english"}).execute()
 
     pairs = []
     for row in result.data:
