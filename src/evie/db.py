@@ -157,17 +157,13 @@ def search_evidence(
     object_class: Optional[str] = None,
 ) -> list[EvidenceWithEnvelope]:
     """Full-text search across evidence objects. Returns pairs with envelopes."""
-    q = (
-        client.table("evidence_objects")
-        .select("*, context_envelopes(*)")
-        .text_search("search_vector", query, options={"config": "english"})
-    )
+    q = client.table("evidence_objects").select("*, context_envelopes(*)")
     if trial_id:
         q = q.eq("trial_id", trial_id)
     if object_class:
         q = q.eq("object_class", object_class)
 
-    result = q.limit(20).execute()
+    result = q.text_search("search_vector", query, options={"config": "english"}).limit(20).execute()
 
     pairs = []
     for row in result.data:
