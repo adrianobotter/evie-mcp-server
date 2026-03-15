@@ -20,10 +20,14 @@ def get_client(access_token: Optional[str] = None) -> Client:
     anon_key = os.environ["SUPABASE_ANON_KEY"]
     client = create_client(url, anon_key)
     if access_token:
-        # Set the user JWT on the PostgREST client directly so RLS sees the
-        # authenticated user.  client.auth.set_session() does NOT propagate
-        # the token to the REST headers — queries would run as anon.
+        # postgrest.auth() only sets self.headers, but the httpx session
+        # that actually sends requests has its own copy of headers created
+        # at init time.  We must set the Authorization header on BOTH so
+        # PostgREST receives the user's JWT and RLS sees auth.uid().
         client.postgrest.auth(access_token)
+        client.postgrest.session.headers["Authorization"] = (
+            f"Bearer {access_token}"
+        )
     return client
 
 
