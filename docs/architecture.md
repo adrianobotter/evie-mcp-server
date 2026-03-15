@@ -36,6 +36,19 @@ EVIE is a two-sided clinical evidence platform connecting pharmaceutical Medical
 
 **This document focuses on the Evie MCP Server.** The Admin App and Supabase schema are covered in their respective workstreams.
 
+### Supabase — Single Shared Instance
+
+Both the Admin App and MCP Server **must** point at the same Supabase project:
+
+| Setting | Value |
+|---------|-------|
+| **Project ID** | `yjtmpjuxwrggkskdffdp` |
+| **URL** | `https://yjtmpjuxwrggkskdffdp.supabase.co` |
+| **Admin App** | Uses `SUPABASE_URL` + service role key (bypasses RLS for writes) |
+| **MCP Server** | Uses `SUPABASE_URL` + anon key (RLS enforced for HCP reads) |
+
+> If you see two Supabase projects, something is misconfigured. Only one project should exist.
+
 ---
 
 ## 2. Evie MCP Server — Purpose & Vision
