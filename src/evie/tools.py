@@ -100,6 +100,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("list_trials auth failed unexpectedly", extra={"event": "tool_error", "tool": "list_trials", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -109,7 +112,7 @@ def register_tools(mcp: FastMCP) -> None:
             if _is_auth_error(e):
                 auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
                 return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
-            return _error_response("An internal error occurred. Please try again.", "internal_error")
+            return _error_response(f"Database query failed: {e}", "internal_error")
         audit.info("list_trials", extra={
             "event": "tool_call", "tool": "list_trials",
             "user_id": hcp.user_id, "result_count": len(trials),
@@ -143,6 +146,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_trial_summary auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_trial_summary", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -152,7 +158,7 @@ def register_tools(mcp: FastMCP) -> None:
             if _is_auth_error(e):
                 auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
                 return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
-            return _error_response("An internal error occurred. Please try again.", "internal_error")
+            return _error_response(f"Database query failed: {e}", "internal_error")
         if not summary:
             return _error_response("Trial not found or not accessible.", "not_found")
         audit.info("get_trial_summary", extra={
@@ -193,6 +199,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_evidence auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_evidence", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -202,7 +211,7 @@ def register_tools(mcp: FastMCP) -> None:
             if _is_auth_error(e):
                 auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
                 return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
-            return _error_response("An internal error occurred. Please try again.", "internal_error")
+            return _error_response(f"Database query failed: {e}", "internal_error")
         audit.info("get_evidence", extra={
             "event": "tool_call", "tool": "get_evidence",
             "user_id": hcp.user_id, "query": query,
@@ -240,6 +249,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_evidence_detail auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_evidence_detail", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -249,7 +261,7 @@ def register_tools(mcp: FastMCP) -> None:
             if _is_auth_error(e):
                 auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
                 return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
-            return _error_response("An internal error occurred. Please try again.", "internal_error")
+            return _error_response(f"Database query failed: {e}", "internal_error")
         if not detail:
             return _error_response("Evidence object not found or not accessible.", "not_found")
         audit.info("get_evidence_detail", extra={
@@ -284,6 +296,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_safety_data auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_safety_data", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -293,7 +308,7 @@ def register_tools(mcp: FastMCP) -> None:
             if _is_auth_error(e):
                 auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
                 return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
-            return _error_response("An internal error occurred. Please try again.", "internal_error")
+            return _error_response(f"Database query failed: {e}", "internal_error")
         if not results:
             return _error_response(
                 "No safety data found for this trial or not accessible.",
