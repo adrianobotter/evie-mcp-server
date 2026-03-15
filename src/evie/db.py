@@ -116,10 +116,10 @@ def list_trials(client: Client) -> list[TrialSummary]:
 def get_trial_summary(client: Client, trial_id: str) -> Optional[dict]:
     """Get trial metadata + primary endpoint evidence objects with envelopes."""
     # Fetch trial
-    trial_result = client.table("trials").select("*").eq("id", trial_id).single().execute()
+    trial_result = client.table("trials").select("*").eq("id", trial_id).limit(1).execute()
     if not trial_result.data:
         return None
-    trial = trial_result.data
+    trial = trial_result.data[0]
 
     # Fetch primary endpoint evidence objects (RLS filters by tier/published)
     eo_result = (
@@ -160,7 +160,7 @@ def search_evidence(
     q = (
         client.table("evidence_objects")
         .select("*, context_envelopes(*)")
-        .text_search("search_vector", query, config="english")
+        .text_search("search_vector", query, options={"config": "english"})
     )
     if trial_id:
         q = q.eq("trial_id", trial_id)
@@ -185,13 +185,13 @@ def get_evidence_detail(client: Client, evidence_object_id: str) -> Optional[Evi
         client.table("evidence_objects")
         .select("*, context_envelopes(*)")
         .eq("id", evidence_object_id)
-        .single()
+        .limit(1)
         .execute()
     )
     if not result.data:
         return None
 
-    row = result.data
+    row = result.data[0]
     envelopes = row.pop("context_envelopes", [])
     envelope_row = envelopes[0] if envelopes else None
     return _pair_evidence_with_envelope(row, envelope_row)
