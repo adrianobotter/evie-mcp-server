@@ -245,6 +245,7 @@ class TestListTrials:
             result = await fn()
             parsed = json.loads(result)
             assert parsed["error"] == "internal_error"
+            assert "DB down" in parsed["message"]
 
     @pytest.mark.asyncio
     async def test_expired_token_returns_invalid_token(self, mock_hcp):
