@@ -17,6 +17,25 @@ def _error_response(message: str, code: str = "error") -> str:
     return json.dumps({"error": code, "message": message})
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """Check if a database/Supabase exception is caused by an expired or invalid token.
+
+    PostgREST returns 401/403 for expired JWTs, and supabase-py surfaces these
+    as exceptions with status codes or descriptive messages.  Detecting these
+    lets us return ``invalid_token`` instead of a generic ``internal_error``,
+    which allows Claude.ai to trigger re-authentication.
+    """
+    msg = str(exc).lower()
+    auth_keywords = ("jwt expired", "jwt", "401", "403", "unauthorized", "forbidden", "token")
+    if any(kw in msg for kw in auth_keywords):
+        return True
+    # postgrest-py APIError carries a `code` attribute (e.g. "PGRST301")
+    code = getattr(exc, "code", None)
+    if code and str(code).startswith("PGRST3"):
+        return True
+    return False
+
+
 async def _authenticate(access_token: AccessToken | None):
     """Verify the HCP from the FastMCP-injected access token.
 
@@ -87,6 +106,9 @@ def register_tools(mcp: FastMCP) -> None:
             trials = db.list_trials(client)
         except Exception as e:
             tool_log.error("list_trials failed", extra={"event": "tool_error", "tool": "list_trials", "user_id": hcp.user_id, "error": str(e)})
+            if _is_auth_error(e):
+                auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
+                return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
             return _error_response("An internal error occurred. Please try again.", "internal_error")
         audit.info("list_trials", extra={
             "event": "tool_call", "tool": "list_trials",
@@ -127,6 +149,9 @@ def register_tools(mcp: FastMCP) -> None:
             summary = db.get_trial_summary(client, trial_id)
         except Exception as e:
             tool_log.error("get_trial_summary failed", extra={"event": "tool_error", "tool": "get_trial_summary", "user_id": hcp.user_id, "error": str(e)})
+            if _is_auth_error(e):
+                auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
+                return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
             return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not summary:
             return _error_response("Trial not found or not accessible.", "not_found")
@@ -174,6 +199,9 @@ def register_tools(mcp: FastMCP) -> None:
             results = db.search_evidence(client, query, trial_id=trial_id, object_class=object_class)
         except Exception as e:
             tool_log.error("get_evidence failed", extra={"event": "tool_error", "tool": "get_evidence", "user_id": hcp.user_id, "error": str(e)})
+            if _is_auth_error(e):
+                auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
+                return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
             return _error_response("An internal error occurred. Please try again.", "internal_error")
         audit.info("get_evidence", extra={
             "event": "tool_call", "tool": "get_evidence",
@@ -218,6 +246,9 @@ def register_tools(mcp: FastMCP) -> None:
             detail = db.get_evidence_detail(client, evidence_object_id)
         except Exception as e:
             tool_log.error("get_evidence_detail failed", extra={"event": "tool_error", "tool": "get_evidence_detail", "user_id": hcp.user_id, "error": str(e)})
+            if _is_auth_error(e):
+                auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
+                return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
             return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not detail:
             return _error_response("Evidence object not found or not accessible.", "not_found")
@@ -259,6 +290,9 @@ def register_tools(mcp: FastMCP) -> None:
             results = db.get_safety_data(client, trial_id)
         except Exception as e:
             tool_log.error("get_safety_data failed", extra={"event": "tool_error", "tool": "get_safety_data", "user_id": hcp.user_id, "error": str(e)})
+            if _is_auth_error(e):
+                auth_log.warning("Token rejected by database", extra={"event": "auth_fail", "error_code": "invalid_token", "user_id": hcp.user_id})
+                return _error_response("Your session has expired. Please re-authenticate.", "invalid_token")
             return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not results:
             return _error_response(

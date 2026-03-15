@@ -58,7 +58,7 @@ class _StoredToken:
     scopes: list[str]
     supabase_access_token: str
     created_at: float = field(default_factory=time.time)
-    expires_in: int = 3600
+    expires_in: int = 3300
 
 
 @dataclass
@@ -231,10 +231,12 @@ class SupabaseOAuthProvider(OAuthProvider):
         if not stored:
             raise ValueError("Authorization code not found")
 
-        # Issue EVIE tokens that wrap the Supabase token
+        # Issue EVIE tokens that wrap the Supabase token.
+        # Expire 5 min before Supabase (3300s vs 3600s) so the client
+        # refreshes the EVIE token before the underlying Supabase JWT expires.
         access_tok = secrets.token_urlsafe(48)
         refresh_tok = secrets.token_urlsafe(48)
-        expires_in = 3600
+        expires_in = 3300
         scopes = authorization_code.scopes or ["evidence:read"]
 
         self._tokens[access_tok] = _StoredToken(
@@ -321,10 +323,10 @@ class SupabaseOAuthProvider(OAuthProvider):
             supabase_access = data["access_token"]
             supabase_refresh = data.get("refresh_token", supabase_refresh)
 
-        # Issue new EVIE tokens
+        # Issue new EVIE tokens (expire before Supabase token)
         new_access = secrets.token_urlsafe(48)
         new_refresh = secrets.token_urlsafe(48)
-        expires_in = 3600
+        expires_in = 3300
         new_scopes = scopes or stored.scopes or ["evidence:read"]
 
         self._tokens[new_access] = _StoredToken(
