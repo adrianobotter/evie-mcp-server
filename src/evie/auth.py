@@ -46,8 +46,8 @@ async def verify_hcp(access_token: str) -> AuthenticatedHCP:
 
     user_id = user_response.user.id
 
-    # Set session so RLS applies, then fetch HCP profile (own row only via RLS)
-    client.auth.set_session(access_token, "")
+    # Set user JWT on PostgREST so RLS sees the authenticated user
+    client.postgrest.auth(access_token)
     result = client.table("hcp_profiles").select("*").eq("id", user_id).execute()
 
     if not result.data:

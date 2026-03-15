@@ -49,7 +49,6 @@ class TestVerifyHCP:
 
         mock_client = MagicMock()
         mock_client.auth.get_user.return_value = mock_user
-        mock_client.auth.set_session.return_value = None
 
         mock_result = MagicMock()
         mock_result.data = []
@@ -58,6 +57,7 @@ class TestVerifyHCP:
         with patch("src.evie.auth.create_client", return_value=mock_client):
             with pytest.raises(AuthError, match="No HCP profile"):
                 await verify_hcp("valid-token")
+            mock_client.postgrest.auth.assert_called_once_with("valid-token")
 
     @pytest.mark.asyncio
     async def test_unverified_raises(self, sample_hcp_row):
@@ -68,7 +68,6 @@ class TestVerifyHCP:
 
         mock_client = MagicMock()
         mock_client.auth.get_user.return_value = mock_user
-        mock_client.auth.set_session.return_value = None
 
         mock_result = MagicMock()
         mock_result.data = [sample_hcp_row]
@@ -77,6 +76,7 @@ class TestVerifyHCP:
         with patch("src.evie.auth.create_client", return_value=mock_client):
             with pytest.raises(AuthError, match="verification status is 'pending'"):
                 await verify_hcp("valid-token")
+            mock_client.postgrest.auth.assert_called_once_with("valid-token")
 
     @pytest.mark.asyncio
     async def test_verified_succeeds(self, sample_hcp_row):
@@ -85,7 +85,6 @@ class TestVerifyHCP:
 
         mock_client = MagicMock()
         mock_client.auth.get_user.return_value = mock_user
-        mock_client.auth.set_session.return_value = None
 
         mock_result = MagicMock()
         mock_result.data = [sample_hcp_row]
@@ -96,3 +95,4 @@ class TestVerifyHCP:
             assert isinstance(hcp, AuthenticatedHCP)
             assert hcp.profile.verification_status == "verified"
             assert hcp.user_id == "user-123"
+            mock_client.postgrest.auth.assert_called_once_with("valid-token")

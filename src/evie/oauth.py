@@ -118,10 +118,27 @@ class SupabaseOAuthProvider(OAuthProvider):
 
     # ── Authorization ────────────────────────────────────────────────────────
 
+    def _cleanup_stale_entries(self) -> None:
+        """Remove expired entries from in-memory stores."""
+        now = time.time()
+        stale = [k for k, v in self._pending.items() if now - v.created_at > 900]
+        for k in stale:
+            del self._pending[k]
+        stale = [k for k, v in self._auth_codes.items() if now - v.created_at > 600]
+        for k in stale:
+            del self._auth_codes[k]
+        stale = [k for k, v in self._tokens.items() if now > v.created_at + v.expires_in]
+        for k in stale:
+            del self._tokens[k]
+        stale = [k for k, v in self._refreshes.items() if now - v.created_at > 86400 * 30]
+        for k in stale:
+            del self._refreshes[k]
+
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:
         """Redirect to EVIE's own login page for email/password auth."""
+        self._cleanup_stale_entries()
         supabase_state = secrets.token_urlsafe(32)
 
         self._pending[supabase_state] = _PendingAuth(
@@ -285,22 +302,26 @@ class SupabaseOAuthProvider(OAuthProvider):
             raise ValueError("Refresh token not found")
 
         # Refresh the Supabase token
-        supabase_access = ""
         supabase_refresh = stored.supabase_refresh_token
-        if supabase_refresh:
-            async with httpx.AsyncClient() as http:
-                resp = await http.post(
-                    f"{self.supabase_url}/auth/v1/token?grant_type=refresh_token",
-                    json={"refresh_token": supabase_refresh},
-                    headers={
-                        "apikey": self.supabase_anon_key,
-                        "Content-Type": "application/json",
-                    },
+        if not supabase_refresh:
+            raise ValueError("No Supabase refresh token available")
+
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                f"{self.supabase_url}/auth/v1/token?grant_type=refresh_token",
+                json={"refresh_token": supabase_refresh},
+                headers={
+                    "apikey": self.supabase_anon_key,
+                    "Content-Type": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                raise ValueError(
+                    f"Supabase token refresh failed (HTTP {resp.status_code})"
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    supabase_access = data["access_token"]
-                    supabase_refresh = data.get("refresh_token", supabase_refresh)
+            data = resp.json()
+            supabase_access = data["access_token"]
+            supabase_refresh = data.get("refresh_token", supabase_refresh)
 
         # Issue new EVIE tokens
         new_access = secrets.token_urlsafe(48)

@@ -11,7 +11,7 @@ from fastmcp.server.auth import AccessToken
 from . import db
 from .auth import AuthError, verify_hcp
 from . import _state
-from .logging import audit, auth_log
+from .logging import audit, auth_log, tool_log
 
 
 def _error_response(message: str, code: str = "error") -> str:
@@ -35,12 +35,24 @@ async def _authenticate(access_token: AccessToken | None):
         if not supabase_token:
             auth_log.warning("Invalid EVIE token", extra={"event": "auth_fail", "error_code": "invalid_token"})
             raise AuthError("Invalid or expired access token.", code="invalid_token")
-        hcp = await verify_hcp(supabase_token)
+        try:
+            hcp = await verify_hcp(supabase_token)
+        except AuthError:
+            raise
+        except Exception as e:
+            auth_log.error("HCP verification failed", extra={"event": "auth_error", "error": str(e)})
+            raise AuthError("Authentication service unavailable. Please try again.", code="service_error")
         auth_log.info("HCP authenticated", extra={"event": "auth_success", "user_id": hcp.user_id})
         return hcp
 
     # Fallback: use the token directly (no OAuth provider configured)
-    hcp = await verify_hcp(access_token.token)
+    try:
+        hcp = await verify_hcp(access_token.token)
+    except AuthError:
+        raise
+    except Exception as e:
+        auth_log.error("HCP verification failed", extra={"event": "auth_error", "error": str(e)})
+        raise AuthError("Authentication service unavailable. Please try again.", code="service_error")
     auth_log.info("HCP authenticated (direct)", extra={"event": "auth_success", "user_id": hcp.user_id})
     return hcp
 
@@ -71,8 +83,12 @@ def register_tools(mcp: FastMCP) -> None:
         except AuthError as e:
             return _error_response(e.message, e.code)
 
-        client = db.get_client(access_token=hcp.access_token)
-        trials = db.list_trials(client)
+        try:
+            client = db.get_client(access_token=hcp.access_token)
+            trials = db.list_trials(client)
+        except Exception as e:
+            tool_log.error("list_trials failed", extra={"event": "tool_error", "tool": "list_trials", "user_id": hcp.user_id, "error": str(e)})
+            return _error_response("An internal error occurred. Please try again.", "internal_error")
         audit.info("list_trials", extra={
             "event": "tool_call", "tool": "list_trials",
             "user_id": hcp.user_id, "result_count": len(trials),
@@ -107,8 +123,12 @@ def register_tools(mcp: FastMCP) -> None:
         except AuthError as e:
             return _error_response(e.message, e.code)
 
-        client = db.get_client(access_token=hcp.access_token)
-        summary = db.get_trial_summary(client, trial_id)
+        try:
+            client = db.get_client(access_token=hcp.access_token)
+            summary = db.get_trial_summary(client, trial_id)
+        except Exception as e:
+            tool_log.error("get_trial_summary failed", extra={"event": "tool_error", "tool": "get_trial_summary", "user_id": hcp.user_id, "error": str(e)})
+            return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not summary:
             return _error_response("Trial not found or not accessible.", "not_found")
         audit.info("get_trial_summary", extra={
@@ -150,8 +170,12 @@ def register_tools(mcp: FastMCP) -> None:
         except AuthError as e:
             return _error_response(e.message, e.code)
 
-        client = db.get_client(access_token=hcp.access_token)
-        results = db.search_evidence(client, query, trial_id=trial_id, object_class=object_class)
+        try:
+            client = db.get_client(access_token=hcp.access_token)
+            results = db.search_evidence(client, query, trial_id=trial_id, object_class=object_class)
+        except Exception as e:
+            tool_log.error("get_evidence failed", extra={"event": "tool_error", "tool": "get_evidence", "user_id": hcp.user_id, "error": str(e)})
+            return _error_response("An internal error occurred. Please try again.", "internal_error")
         audit.info("get_evidence", extra={
             "event": "tool_call", "tool": "get_evidence",
             "user_id": hcp.user_id, "query": query,
@@ -190,8 +214,12 @@ def register_tools(mcp: FastMCP) -> None:
         except AuthError as e:
             return _error_response(e.message, e.code)
 
-        client = db.get_client(access_token=hcp.access_token)
-        detail = db.get_evidence_detail(client, evidence_object_id)
+        try:
+            client = db.get_client(access_token=hcp.access_token)
+            detail = db.get_evidence_detail(client, evidence_object_id)
+        except Exception as e:
+            tool_log.error("get_evidence_detail failed", extra={"event": "tool_error", "tool": "get_evidence_detail", "user_id": hcp.user_id, "error": str(e)})
+            return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not detail:
             return _error_response("Evidence object not found or not accessible.", "not_found")
         audit.info("get_evidence_detail", extra={
@@ -227,8 +255,12 @@ def register_tools(mcp: FastMCP) -> None:
         except AuthError as e:
             return _error_response(e.message, e.code)
 
-        client = db.get_client(access_token=hcp.access_token)
-        results = db.get_safety_data(client, trial_id)
+        try:
+            client = db.get_client(access_token=hcp.access_token)
+            results = db.get_safety_data(client, trial_id)
+        except Exception as e:
+            tool_log.error("get_safety_data failed", extra={"event": "tool_error", "tool": "get_safety_data", "user_id": hcp.user_id, "error": str(e)})
+            return _error_response("An internal error occurred. Please try again.", "internal_error")
         if not results:
             return _error_response(
                 "No safety data found for this trial or not accessible.",
