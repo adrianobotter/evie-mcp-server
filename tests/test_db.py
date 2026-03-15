@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 
 from src.evie.db import (
     _row_to_evidence_object, _row_to_envelope, _pair_evidence_with_envelope,
-    get_client, get_hcp_profile, list_trials, get_trial_summary,
+    get_client, list_trials, get_trial_summary,
     search_evidence, get_evidence_detail, get_safety_data,
 )
 
@@ -90,26 +90,6 @@ class TestGetClient:
             mock_client.postgrest.auth.assert_called_once_with("user-jwt")
             assert result is mock_client
 
-
-class TestGetHCPProfile:
-    def test_returns_profile(self, sample_hcp_row):
-        mock_client = MagicMock()
-        mock_result = MagicMock()
-        mock_result.data = [sample_hcp_row]
-        mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_result
-
-        profile = get_hcp_profile(mock_client, "user-123")
-        assert profile is not None
-        assert profile.id == "user-123"
-        assert profile.verification_status == "verified"
-
-    def test_returns_none_when_no_profile(self):
-        mock_client = MagicMock()
-        mock_result = MagicMock()
-        mock_result.data = []
-        mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_result
-
-        assert get_hcp_profile(mock_client, "unknown") is None
 
 
 class TestListTrials:

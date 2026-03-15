@@ -4,15 +4,6 @@ from typing import Optional
 from pydantic import BaseModel
 
 
-# ─── Tier ordering ────────────────────────────────────────────────────────────
-
-TIER_RANK = {"tier1": 1, "tier2": 2, "tier3": 3, "tier4": 4}
-
-
-def tier_accessible(evidence_tier: str, hcp_max_tier: str) -> bool:
-    """Check if an evidence tier is accessible to an HCP's max tier."""
-    return TIER_RANK.get(evidence_tier, 0) <= TIER_RANK.get(hcp_max_tier, 0)
-
 
 # ─── Source Provenance ────────────────────────────────────────────────────────
 

@@ -9,7 +9,6 @@ from .models import (
     ContextEnvelope,
     EvidenceObject,
     EvidenceWithEnvelope,
-    HCPProfile,
     SourceProvenance,
     TrialSummary,
 )
@@ -77,20 +76,6 @@ def _pair_evidence_with_envelope(eo_row: dict, envelope_row: Optional[dict]) -> 
 
 # ─── Query functions ─────────────────────────────────────────────────────────
 
-
-def get_hcp_profile(client: Client, user_id: str) -> Optional[HCPProfile]:
-    """Fetch HCP profile for the authenticated user."""
-    result = client.table("hcp_profiles").select("*").eq("id", user_id).execute()
-    if not result.data:
-        return None
-    row = result.data[0]
-    return HCPProfile(
-        id=row["id"],
-        full_name=row.get("full_name"),
-        specialty=row.get("specialty"),
-        verification_status=row["verification_status"],
-        max_tier_access=row["max_tier_access"],
-    )
 
 
 def list_trials(client: Client) -> list[TrialSummary]:

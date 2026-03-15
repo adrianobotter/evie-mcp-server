@@ -3,9 +3,7 @@
 import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
-import httpx
 import pytest
-import pytest_asyncio
 
 from mcp.server.auth.provider import RefreshToken
 from mcp.shared.auth import OAuthClientInformationFull
