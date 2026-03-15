@@ -13,7 +13,7 @@ from src.evie.models import (
     HCPProfile,
     TrialSummary,
 )
-from src.evie.tools import _authenticate, _error_response
+from src.evie.tools import _authenticate, _error_response, _is_auth_error
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -89,6 +89,31 @@ class TestErrorResponse:
         result = _error_response("msg")
         parsed = json.loads(result)
         assert parsed["error"] == "error"
+
+
+# ─── _is_auth_error ─────────────────────────────────────────────────────
+
+
+class TestIsAuthError:
+    def test_jwt_expired(self):
+        assert _is_auth_error(Exception("JWT expired")) is True
+
+    def test_unauthorized_401(self):
+        assert _is_auth_error(Exception("401 Unauthorized")) is True
+
+    def test_forbidden_403(self):
+        assert _is_auth_error(Exception("403 Forbidden")) is True
+
+    def test_pgrst_code(self):
+        exc = Exception("auth error")
+        exc.code = "PGRST301"
+        assert _is_auth_error(exc) is True
+
+    def test_generic_error_not_auth(self):
+        assert _is_auth_error(Exception("connection timeout")) is False
+
+    def test_db_error_not_auth(self):
+        assert _is_auth_error(RuntimeError("relation does not exist")) is False
 
 
 # ─── _authenticate ──────────────────────────────────────────────────────────
@@ -220,6 +245,22 @@ class TestListTrials:
             result = await fn()
             parsed = json.loads(result)
             assert parsed["error"] == "internal_error"
+
+    @pytest.mark.asyncio
+    async def test_expired_token_returns_invalid_token(self, mock_hcp):
+        with patch("src.evie.tools.get_access_token") as mock_gat, \
+             patch("src.evie.tools._authenticate", new_callable=AsyncMock) as mock_auth, \
+             patch("src.evie.tools.db") as mock_db:
+            mock_gat.return_value = MagicMock()
+            mock_auth.return_value = mock_hcp
+            mock_db.get_client.return_value = MagicMock()
+            mock_db.list_trials.side_effect = Exception("JWT expired")
+
+            fn = await _get_tool_fn("list_trials")
+            result = await fn()
+            parsed = json.loads(result)
+            assert parsed["error"] == "invalid_token"
+            assert "expired" in parsed["message"].lower()
 
 
 class TestGetTrialSummary:
