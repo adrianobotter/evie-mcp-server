@@ -100,6 +100,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("list_trials auth failed unexpectedly", extra={"event": "tool_error", "tool": "list_trials", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -143,6 +146,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_trial_summary auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_trial_summary", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -193,6 +199,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_evidence auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_evidence", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -240,6 +249,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_evidence_detail auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_evidence_detail", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)
@@ -284,6 +296,9 @@ def register_tools(mcp: FastMCP) -> None:
             hcp = await _authenticate(access_token)
         except AuthError as e:
             return _error_response(e.message, e.code)
+        except Exception as e:
+            tool_log.error("get_safety_data auth failed unexpectedly", extra={"event": "tool_error", "tool": "get_safety_data", "error": str(e), "error_type": type(e).__name__})
+            return _error_response(f"Authentication failed: {type(e).__name__}: {e}", "auth_error")
 
         try:
             client = db.get_client(access_token=hcp.access_token)

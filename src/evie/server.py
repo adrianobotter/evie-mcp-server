@@ -71,6 +71,58 @@ async def health_check(request):
     return JSONResponse({"status": "ok", "server": "evie_mcp"})
 
 
+@mcp.custom_route("/debug/test-db", methods=["GET"])
+async def debug_test_db(request):
+    """Diagnostic endpoint: test Supabase connectivity and schema with the anon key.
+
+    Hit GET /debug/test-db to verify the database is reachable and the
+    required tables/functions exist.  No user auth needed — runs as anon.
+    """
+    import os, traceback
+    from supabase import create_client
+
+    checks: dict = {}
+    try:
+        url = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_ANON_KEY"]
+        checks["env_vars"] = "ok"
+    except KeyError as e:
+        return JSONResponse({"error": f"Missing env var: {e}"}, status_code=500)
+
+    try:
+        client = create_client(url, key)
+        checks["create_client"] = "ok"
+    except Exception as e:
+        checks["create_client"] = f"FAILED: {type(e).__name__}: {e}"
+        return JSONResponse(checks, status_code=500)
+
+    # Test basic PostgREST connectivity (anon can't read RLS-protected rows,
+    # but the request itself should succeed with an empty result)
+    for table in ("trials", "evidence_objects", "hcp_profiles"):
+        try:
+            result = client.table(table).select("id").limit(1).execute()
+            checks[f"table_{table}"] = f"ok (rows visible to anon: {len(result.data)})"
+        except Exception as e:
+            checks[f"table_{table}"] = f"FAILED: {type(e).__name__}: {e}"
+
+    # Test tier_rank function via RPC (if available)
+    try:
+        result = client.rpc("tier_rank", {"t": "tier1"}).execute()
+        checks["function_tier_rank"] = f"ok (tier1 = {result.data})"
+    except Exception as e:
+        checks["function_tier_rank"] = f"FAILED: {type(e).__name__}: {e}"
+
+    # Check OAuth provider state
+    checks["oauth_provider"] = "configured" if _state.oauth_provider else "NOT configured (auth=None)"
+    if _state.oauth_provider:
+        p = _state.oauth_provider
+        checks["oauth_tokens_in_memory"] = len(p._tokens)
+        checks["oauth_base_url"] = p._base_url_str
+
+    status = 200 if all("FAILED" not in str(v) for v in checks.values()) else 500
+    return JSONResponse(checks, status_code=status)
+
+
 # ─── Login page (email/password) ─────────────────────────────────────────────
 
 _LOGIN_HTML = """<!DOCTYPE html>
