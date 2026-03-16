@@ -187,6 +187,70 @@ def get_evidence_detail(client: Client, evidence_object_id: str) -> Optional[Evi
     return _pair_evidence_with_envelope(row, envelope_row)
 
 
+def diagnose_connection(client: Client, trial_id: str | None = None) -> dict:
+    """Run diagnostic queries to help debug DB connectivity and data issues.
+
+    Checks: basic connectivity, table access, row counts, relationship embedding,
+    and RLS visibility for the authenticated user.
+    """
+    diag: dict = {"checks": {}}
+
+    # 1. Basic connectivity — can we reach PostgREST at all?
+    try:
+        result = client.table("trials").select("id", count="exact").limit(1).execute()
+        diag["checks"]["trials_accessible"] = True
+        diag["checks"]["trials_count"] = result.count
+    except Exception as e:
+        diag["checks"]["trials_accessible"] = False
+        diag["checks"]["trials_error"] = f"{type(e).__name__}: {e}"
+
+    # 2. Evidence objects — basic select without embed
+    try:
+        q = client.table("evidence_objects").select("id, trial_id, object_class, is_published, tier", count="exact")
+        if trial_id:
+            q = q.eq("trial_id", trial_id)
+        result = q.limit(5).execute()
+        diag["checks"]["evidence_objects_accessible"] = True
+        diag["checks"]["evidence_objects_count"] = result.count
+        diag["checks"]["evidence_objects_sample"] = result.data[:3]
+    except Exception as e:
+        diag["checks"]["evidence_objects_accessible"] = False
+        diag["checks"]["evidence_objects_error"] = f"{type(e).__name__}: {e}"
+
+    # 3. Context envelopes — basic select without embed
+    try:
+        result = client.table("context_envelopes").select("id, evidence_object_id", count="exact").limit(5).execute()
+        diag["checks"]["context_envelopes_accessible"] = True
+        diag["checks"]["context_envelopes_count"] = result.count
+    except Exception as e:
+        diag["checks"]["context_envelopes_accessible"] = False
+        diag["checks"]["context_envelopes_error"] = f"{type(e).__name__}: {e}"
+
+    # 4. Embedded select — the pattern used by all failing tools
+    try:
+        q = client.table("evidence_objects").select("id, context_envelopes(id)")
+        if trial_id:
+            q = q.eq("trial_id", trial_id)
+        result = q.limit(3).execute()
+        diag["checks"]["embedded_select_works"] = True
+        diag["checks"]["embedded_select_sample"] = result.data[:2]
+    except Exception as e:
+        diag["checks"]["embedded_select_works"] = False
+        diag["checks"]["embedded_select_error"] = f"{type(e).__name__}: {e}"
+
+    # 5. HCP profile visibility
+    try:
+        result = client.table("hcp_profiles").select("id, verification_status, max_tier_access").limit(1).execute()
+        diag["checks"]["hcp_profile_visible"] = bool(result.data)
+        if result.data:
+            diag["checks"]["hcp_profile"] = result.data[0]
+    except Exception as e:
+        diag["checks"]["hcp_profile_visible"] = False
+        diag["checks"]["hcp_profile_error"] = f"{type(e).__name__}: {e}"
+
+    return diag
+
+
 def get_safety_data(client: Client, trial_id: str) -> list[EvidenceWithEnvelope]:
     """Get all adverse event evidence objects for a trial, sorted by incidence (result_value desc)."""
     result = (
