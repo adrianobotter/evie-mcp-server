@@ -68,6 +68,22 @@ def _row_to_envelope(row: dict) -> ContextEnvelope:
     )
 
 
+def _extract_envelope(row: dict) -> Optional[dict]:
+    """Extract context_envelopes from a PostgREST embedded select result.
+
+    PostgREST returns a single dict for one-to-one relationships (UNIQUE FK)
+    but a list for one-to-many. Handle both.
+    """
+    raw = row.pop("context_envelopes", None)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw if raw else None
+    if isinstance(raw, list):
+        return raw[0] if raw else None
+    return None
+
+
 def _pair_evidence_with_envelope(eo_row: dict, envelope_row: Optional[dict]) -> Optional[EvidenceWithEnvelope]:
     """Pair an evidence object row with its envelope. Returns None if envelope is missing."""
     if not envelope_row:
@@ -124,8 +140,7 @@ def get_trial_summary(client: Client, trial_id: str) -> Optional[dict]:
 
     pairs = []
     for row in eo_result.data:
-        envelopes = row.pop("context_envelopes", [])
-        envelope_row = envelopes[0] if envelopes else None
+        envelope_row = _extract_envelope(row)
         pair = _pair_evidence_with_envelope(row, envelope_row)
         if pair:
             pairs.append(pair)
@@ -161,8 +176,7 @@ def search_evidence(
 
     pairs = []
     for row in result.data:
-        envelopes = row.pop("context_envelopes", [])
-        envelope_row = envelopes[0] if envelopes else None
+        envelope_row = _extract_envelope(row)
         pair = _pair_evidence_with_envelope(row, envelope_row)
         if pair:
             pairs.append(pair)
@@ -182,8 +196,7 @@ def get_evidence_detail(client: Client, evidence_object_id: str) -> Optional[Evi
         return None
 
     row = result.data[0]
-    envelopes = row.pop("context_envelopes", [])
-    envelope_row = envelopes[0] if envelopes else None
+    envelope_row = _extract_envelope(row)
     return _pair_evidence_with_envelope(row, envelope_row)
 
 
@@ -264,8 +277,7 @@ def get_safety_data(client: Client, trial_id: str) -> list[EvidenceWithEnvelope]
 
     pairs = []
     for row in result.data:
-        envelopes = row.pop("context_envelopes", [])
-        envelope_row = envelopes[0] if envelopes else None
+        envelope_row = _extract_envelope(row)
         pair = _pair_evidence_with_envelope(row, envelope_row)
         if pair:
             # Enforce: safety_statement must be present
