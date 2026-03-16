@@ -58,7 +58,7 @@ The Evie MCP Server is the **only** component of the system that HCPs interact w
 ### Design Philosophy
 
 - **Thin query layer** — its value is in what it _enforces_ before returning data, not in what it computes
-- **No Docling dependency** — it does not process PDFs or run ML models
+- **No PDF/ML dependency** — it does not process PDFs or run ML models
 - **Context Envelope guarantee** — every tool response includes population constraints, interpretation guardrails, and a safety statement, enforced at the tool level (not by prompt engineering)
 - **Fast and lightweight** — should deploy in under 60 seconds and use minimal RAM
 
@@ -308,7 +308,7 @@ The MCP Server enforces governance at three layers. Relying on a single layer is
 | `evidence_objects` SELECT | `is_published = true AND tier <= hcp_profiles.max_tier_access` |
 | `context_envelopes` SELECT | Joins through `evidence_objects` — same tier/published rules |
 | `hcp_profiles` SELECT | User can only read their own row |
-| `source_documents` SELECT | **Never** — HCPs cannot access raw Docling output |
+| `source_documents` SELECT | **Never** — HCPs cannot access raw source document output |
 
 ---
 
@@ -322,7 +322,7 @@ The MCP Server enforces governance at three layers. Relying on a single layer is
 | **Auth** | FastMCP OAuth provider — Supabase as identity backend |
 | **Hosting** | Railway — single lightweight service, no ML dependencies |
 | **Transport** | Streamable HTTP (Claude.ai Connector requirement) |
-| **PDF Processing** | **None** — Docling is not a dependency of this service |
+| **PDF Processing** | **None** — not a dependency of this service |
 
 ---
 
@@ -370,7 +370,7 @@ Seeding one trial manually in Phase 2 breaks the chicken-and-egg dependency. The
 
 The Evie MCP Server explicitly does **not**:
 
-- Process PDFs or call Docling
+- Process PDFs or perform document extraction
 - Generate clinical summaries or synthesize evidence — Claude does that
 - Serve the Admin App — that uses Supabase directly
 - Store or cache evidence — all data lives in Supabase
@@ -385,4 +385,4 @@ The Evie MCP Server explicitly does **not**:
 - Context Envelopes are mandatory guardrails, not optional metadata.
 - Provenance (`source_provenance`) is immutable — set at creation, cannot be edited after publishing.
 - All evidence access is logged with HCP identity, timestamp, and query for audit purposes.
-- No raw PDF content or Docling output is ever exposed to HCPs.
+- No raw PDF content or source document output is ever exposed to HCPs.
