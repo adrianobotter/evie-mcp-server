@@ -324,3 +324,79 @@ The most pragmatic path would be to:
 4. Migrate schema additively (new columns, new tables) without breaking existing queries
 
 But this dual-auth approach adds complexity the PRD doesn't account for.
+
+---
+
+## Architecture Decisions Record
+
+### Decision 1: Authentication Architecture
+- **Date:** 2026-03-19
+- **Decision:** **Dual auth — support both**
+- **Detail:** Keep existing HCP OAuth for Claude Connector. Add partner-key auth (API keys + JWT bearer tokens) as a second path. Shared internal functions serve both auth flows. This preserves the current individual HCP login while enabling the PRD's machine-to-machine partner model.
+- **Impact:** `auth/` becomes a package with two resolvers (HCP OAuth + partner key). Tool internals must be auth-agnostic — they receive a unified caller context regardless of auth path.
+
+### Decision 2: Database Access Pattern
+- **Date:** 2026-03-19
+- **Decision:** **Hybrid — RLS for HCP, service_role for partners**
+- **Detail:** HCP OAuth path continues to use per-user JWT with RLS enforcement. Partner-key path uses `SUPABASE_SERVICE_ROLE_KEY` with application-level filtering (tier, audience, publish status). Two client creation modes in `db.py`.
+- **Impact:** `db.py` needs dual-mode `get_client()`. Query functions must accept a flag or context object indicating which access mode to use. RLS policies remain active and relevant for HCP path.
+
+### Decision 3: Module Structure
+- **Date:** 2026-03-19
+- **Decision:** **PRD layout — subdirectory packages**
+- **Detail:** Adopt the PRD's modular subdirectory structure: `db/`, `auth/`, `tools/`, `compliance/`, `rest/`, `transport/`. Full reorganization of imports and package layout.
+- **Impact:** All import statements change. `src/evie/` contents reorganized into subdirectory packages. `__init__.py` files needed for each package. Test imports must be updated.
+
+### Decision 4: Response Format
+- **Date:** 2026-03-19
+- **Decision:** **PRD envelope — breaking change**
+- **Detail:** All tools return the PRD's standard envelope: `{ evidence, metadata, compliance }`. Current consumers (Claude Connector) must adapt to the new format. No backward-compatibility shim.
+- **Impact:** All tool return statements rewritten. `model_dump()` serialization changes. Test assertions must be updated for new response shape.
+
+### Decision 5: Tier System
+- **Date:** 2026-03-19
+- **Decision:** **3 tiers (PRD)**
+- **Detail:** Switch from 4 tiers (tier1–tier4) to 3 tiers (tier1–tier3). Requires migrating existing tier4 data, updating RLS policies, CHECK constraints, and the `tier_rank()` function.
+- **Impact:** Schema migration to drop tier4. `hcp_profiles.max_tier_access` CHECK constraint updated. `tier_rank()` function simplified. Seed data adjusted.
+
+### Decision 6: Tool Signatures
+- **Date:** 2026-03-19
+- **Decision:** **PRD signatures — breaking change**
+- **Detail:** Adopt PRD tool signatures directly: `audience_type` becomes required, expanded filter parameters added, parameter names changed where specified. Breaking change for existing Claude Connector tool schemas.
+- **Impact:** All 5 tool function signatures change. Claude.ai Connector tool schema auto-discovery will reflect new signatures. Existing Connector configurations must be updated.
+
+### Decision 7: REST API (Dual Transport)
+- **Date:** 2026-03-19
+- **Decision:** **Build now**
+- **Detail:** Build the FastAPI REST wrapper alongside MCP. Shared internal functions (`tools/internal.py`) called by both MCP tools and REST routes. Supports ChatGPT Apps via OpenAPI spec generation.
+- **Impact:** New `rest/` module with FastAPI app, routes, auth middleware, and OpenAPI generator. Tool logic refactored to separate transport handlers from internal query+compliance pipeline. New `fastapi` dependency added.
+
+### Decision 8: Compliance Module
+- **Date:** 2026-03-19
+- **Decision:** **Full compliance module**
+- **Detail:** Build the complete compliance module: envelope enforcement, badge logic (including patient lay-language mapping), cross-trial comparison policy collection, and audit logging to `audience_query_log` table.
+- **Impact:** New `compliance/` package with `envelope.py`, `badge.py`, `comparison_policy.py`, `audit.py`. Every tool's post-query processing pipeline updated. `audience_query_log` table created.
+
+### Decision 9: Error Handling
+- **Date:** 2026-03-19
+- **Decision:** **Merged — add PRD codes to current format**
+- **Detail:** Keep current error response shape but add PRD error codes (`TIER_INSUFFICIENT`, `PARTNER_UNAUTHORIZED`, `AUTH_INVALID`, etc.) as additional fields. Both old and new consumers can parse errors.
+- **Impact:** `_error_response()` helper updated to include PRD-style `code` field. New error codes added alongside existing `AuthError` codes. Non-breaking for existing consumers.
+
+### Decision 10: Audience Routing
+- **Date:** 2026-03-19
+- **Decision:** **Full audience routing**
+- **Detail:** Full implementation: `audience_routing` column on `evidence_objects`, `audience_type` parameter on all tools, patient tier ceiling (Tier 1 max), lay-language badge mapping for patients, MSL-specific evidence access.
+- **Impact:** Schema migration for new column. Every query function filters by audience. Tool signatures include `audience_type`. Compliance module enforces patient ceiling and badge mapping.
+
+### Decision 11: Database Schema Migration Strategy
+- **Date:** 2026-03-19
+- **Decision:** **Clean slate — rewrite schema**
+- **Detail:** Rewrite schema from scratch to match PRD exactly. Drop and recreate tables. Clean break — existing data is not preserved.
+- **Impact:** New migration replaces existing `001_schema.sql`. Seed data rewritten. All existing dev/staging data lost. Simpler than ALTER TABLE approach but destructive.
+
+### Decision 12: Entry Point
+- **Date:** 2026-03-19
+- **Decision:** **PRD — root server.py**
+- **Detail:** Move to PRD's root-level `server.py` entry point (`python server.py`). Update Dockerfile CMD and `railway.toml` start command accordingly.
+- **Impact:** `Dockerfile` CMD and `railway.toml` start command updated. Package structure may shift from `src/evie/` to root-level or `evie/` package.
