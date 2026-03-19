@@ -1,11 +1,13 @@
 # EVIE MCP Server — Implementation PRD
 
-**Version:** 1.0  
-**Date:** March 19, 2026  
-**Build Platform:** Python (FastMCP) deployed on Railway  
-**Database:** Supabase PostgreSQL (project `yjtmpjuxwrggkskdffdp`) — read from the same DB that the Admin Platform writes to  
-**Reference:** EVIE PRD v2.1 (north star), §7 MCP Server Specification, §8 Evidence Schema Architecture  
-**Status:** Ready for Implementation
+**Version:** 2.0
+**Date:** March 19, 2026
+**Build Platform:** Python (FastMCP) deployed on Railway
+**Database:** Supabase PostgreSQL (project `yjtmpjuxwrggkskdffdp`) — read from the same DB that the Admin Platform writes to
+**Reference:** EVIE PRD v2.1 (north star), §7 MCP Server Specification, §8 Evidence Schema Architecture
+**Status:** Ready for Implementation — Architecture Decisions Finalized (see §15)
+
+> **Note:** This document is the **single source of truth** for the EVIE MCP Server implementation. It incorporates 12 architecture decisions resolving conflicts between the original PRD and the existing codebase. Key divergences from v1.0: dual authentication (HCP OAuth preserved alongside partner auth), hybrid database access (RLS for HCP path, service_role for partner path), and merged error handling format.
 
 ---
 
@@ -34,18 +36,32 @@ Side A (the Lovable Admin Platform) writes evidence into Supabase. Side B (this 
 
 ### 1.3 Who Calls This Server
 
-AI platform partners integrate the EVIE MCP server as a tool provider. The calling AI system sends MCP tool calls and receives structured evidence JSON in response. The server is NOT called by humans directly — it is machine-to-machine.
+The EVIE MCP Server supports **two caller models**:
+
+**Path A — Individual HCP via Claude Connector (OAuth):**
+An individual HCP authenticates via OAuth 2.0 through the Claude.ai Connector. The server resolves the caller to a specific human HCP with a verified profile and tier access. Database queries use per-user JWT with RLS enforcement.
+
+**Path B — AI Platform Partner (API key / JWT):**
+AI platform partners integrate the EVIE MCP server as a machine-to-machine tool provider. The calling AI system sends MCP tool calls with partner API keys or JWT bearer tokens. No individual user identity — auth is at the partner level. Database queries use service_role key with application-level filtering.
+
+Both paths converge on the **same internal tool functions** — the tool layer is auth-agnostic and receives a unified `CallerContext` regardless of how the caller authenticated.
 
 ```
-AI Platform Partner (e.g., Claude via MCP Connector, ChatGPT via Custom GPT Actions, OpenEvidence)
-  → Their LLM decides to call an EVIE tool
-    → MCP tool_call: get_evidence(trial="wegovy", audience_type="hcp", tier="tier2")
-      → EVIE MCP Server (this service)
-        → Supabase query (evidence_objects + context_envelopes)
-        → Structured JSON response with envelope fields injected
-      ← Response to AI platform
-    ← AI platform grounds its response in EVIE evidence
-  ← HCP sees governed, badge-labeled evidence in their clinical tool
+Path A: Claude Connector (HCP OAuth)
+  → HCP logs in via OAuth 2.0 flow (email/password → Supabase Auth → EVIE token)
+    → MCP tool_call: get_evidence(audience_type="hcp", drug_name="wegovy")
+      → EVIE MCP Server → resolve_caller_tier() → HCP auth path → RLS-enforced query
+      ← Structured JSON with envelope
+    ← Claude grounds response in EVIE evidence
+  ← HCP sees governed, badge-labeled evidence
+
+Path B: Partner API (Machine-to-Machine)
+  → AI Platform Partner (ChatGPT, OpenEvidence, Epic CDS, etc.)
+    → MCP tool_call: get_evidence(audience_type="hcp", drug_name="wegovy")
+      → EVIE MCP Server → resolve_caller_tier() → Partner auth path → service_role query
+      ← Structured JSON with envelope (identical format)
+    ← AI platform grounds response in EVIE evidence
+  ← End user sees governed evidence in their platform
 ```
 
 ---
@@ -59,7 +75,8 @@ AI Platform Partner (e.g., Claude via MCP Connector, ChatGPT via Custom GPT Acti
 | Database Client | `supabase-py` or `asyncpg` | Reads from Supabase PostgreSQL |
 | HTTP Transport | Streamable HTTP (built into FastMCP) | JSON-RPC 2.0 over HTTP |
 | Hosting | Railway | Always-on deployment; custom domain |
-| Auth | JWT validation (Tier 3) + partner API key (Tier 2) | No auth for Tier 1 |
+| Auth (Path A) | OAuth 2.0 via Supabase Auth (HCP login) | Individual HCP identity; RLS-enforced |
+| Auth (Path B) | JWT validation (Tier 3) + partner API key (Tier 2) | No auth for Tier 1 |
 | Health Check | `/health` HTTP endpoint | Railway health check |
 
 ### 2.1 Dependencies
@@ -69,7 +86,7 @@ mcp[cli]>=1.0.0
 supabase>=2.0.0
 httpx>=0.27.0
 pydantic>=2.0.0
-python-jose>=3.3.0    # JWT validation for Tier 3
+python-jose>=3.3.0    # JWT validation for Tier 3 + HCP OAuth token validation
 uvicorn>=0.30.0       # ASGI server
 fastapi>=0.115.0      # REST wrapper for ChatGPT Apps (OpenAPI)
 ```
@@ -83,11 +100,13 @@ fastapi>=0.115.0      # REST wrapper for ChatGPT Apps (OpenAPI)
 | Variable | Purpose | Required |
 |----------|---------|----------|
 | `SUPABASE_URL` | Supabase project URL | Yes |
-| `SUPABASE_SERVICE_ROLE_KEY` | Admin DB access (read-only usage) | Yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | Admin DB access for partner auth path (bypasses RLS) | Yes |
+| `SUPABASE_ANON_KEY` | Anon key for HCP OAuth path (respects RLS) | Yes |
 | `MCP_SERVER_PORT` | HTTP port | Yes (default: 8000) |
 | `MCP_SERVER_HOST` | Bind address | Yes (default: 0.0.0.0) |
 | `JWT_SECRET` | Shared secret for NPI-verified JWT validation (Tier 3 HCP) | Yes (for v1.5) |
 | `SPONSOR_TOKEN_SECRET` | Shared secret for sponsor auth token validation (Tier 3 payer/MSL) | Yes (for v1.5) |
+| `EVIE_TOKEN_SECRET` | Secret for EVIE-issued OAuth tokens (HCP auth path) | Yes |
 | `LOG_LEVEL` | Logging verbosity | No (default: INFO) |
 | `RAILWAY_ENVIRONMENT` | Railway environment identifier | Auto-injected |
 
@@ -117,18 +136,42 @@ CMD ["python", "server.py"]
 
 ## 4. Database Access Pattern
 
-The MCP server is a **read-only consumer** of the Supabase database. It reads from 5 tables and writes to 1 (audit log).
+The MCP server is a **read-only consumer** of the Supabase database (except audit logging). It reads from 6 tables and writes to 1 (audit log).
+
+### 4.0 Dual-Mode Database Access
+
+The server operates in **two database access modes** depending on the authentication path:
+
+| Mode | Auth Path | Supabase Key | Security Model |
+|------|-----------|-------------|----------------|
+| **HCP Mode** | OAuth (individual HCP login) | `SUPABASE_ANON_KEY` + per-user JWT injected via `client.postgrest.auth()` | **Row-Level Security (RLS)** — tier filtering, audience routing, and publish-status enforcement happen at the database level via RLS policies referencing `auth.uid()` and `hcp_profiles.max_tier_access` |
+| **Partner Mode** | API key / JWT (machine-to-machine) | `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS) | **Application-level filtering** — every query must explicitly include `WHERE eo.is_published = true AND eo.tier <= :caller_tier AND :audience_type = ANY(eo.audience_routing)` |
+
+```python
+# db/client.py
+def get_client(caller: CallerContext) -> SupabaseClient:
+    """Return the appropriate Supabase client based on auth path."""
+    if caller.auth_mode == "hcp_oauth":
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        client.postgrest.auth(caller.supabase_jwt)  # RLS enforced
+        return client
+    else:  # partner_key, partner_jwt, anonymous
+        return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+```
+
+**Critical invariant:** Query functions in `db/queries.py` must be aware of the access mode. In Partner Mode, all security filters are explicit in the query. In HCP Mode, RLS handles tier/publish filtering, but audience routing filters are still applied at the application level (since the current RLS policies don't cover audience routing).
 
 ### 4.1 Tables Read
 
-| Table | Usage | Key Queries |
-|-------|-------|-------------|
-| `evidence_objects` | Core evidence retrieval | Filter by `trial_id`, `object_class`, `tier`, `audience_routing`, `is_published = true`, full-text `search_vector` |
-| `context_envelopes` | Governance data injected into every response | JOIN on `evidence_object_id` (1:1) |
-| `trials` | Trial metadata for `list_trials` and `get_trial_summary` | Filter by `status = 'active'` |
-| `sponsors` | Sponsor metadata | JOIN via `trials.sponsor_id` |
-| `partner_access_rules` | Tier validation per partner/indication | Filter by `partner_name` and `applies_to_indications` |
-| `evidence_hierarchy` | L1→L2→L3 relationships | Filter by `parent_evidence_id` or `child_evidence_id` |
+| Table | Usage | Key Queries | Access Mode |
+|-------|-------|-------------|-------------|
+| `evidence_objects` | Core evidence retrieval | Filter by `trial_id`, `object_class`, `tier`, `audience_routing`, `is_published = true`, full-text `search_vector` | Both |
+| `context_envelopes` | Governance data injected into every response | JOIN on `evidence_object_id` (1:1) | Both |
+| `trials` | Trial metadata for `list_trials` and `get_trial_summary` | Filter by `status = 'active'` | Both |
+| `sponsors` | Sponsor metadata | JOIN via `trials.sponsor_id` | Partner Mode only (RLS-blocked for HCPs) |
+| `partner_access_rules` | Tier validation per partner/indication | Filter by `partner_name` and `applies_to_indications` | Partner Mode only (RLS-blocked for HCPs) |
+| `evidence_hierarchy` | L1→L2→L3 relationships | Filter by `parent_evidence_id` or `child_evidence_id` | Both |
+| `hcp_profiles` | HCP identity + tier access | Lookup by `auth.uid()` | HCP Mode only |
 
 ### 4.2 Table Written
 
@@ -180,33 +223,72 @@ ORDER BY eo.evidence_hierarchy_level ASC, eo.created_at DESC;
 - Audience routing: only evidence tagged for the caller's audience type is returned
 - Context Envelope fields are ALWAYS joined — no evidence without governance
 
+**Access mode note:** This query as written is the **Partner Mode** version (explicit WHERE clauses for all filters). In **HCP Mode**, RLS policies handle `is_published` and `tier` filtering at the database level, so those WHERE clauses are redundant but harmless. The `audience_routing` filter is always applied at the application level in both modes.
+
 ---
 
 ## 5. Authentication & Access Control
 
+The EVIE MCP Server supports **dual authentication** — two parallel auth paths that converge on a unified `CallerContext` consumed by all tool internals.
+
 ### 5.1 Tier Model
 
-| Tier | Access Level | Auth Mechanism | Who |
-|------|-------------|----------------|-----|
-| Tier 1 | Open | None — any MCP client | Any AI platform |
-| Tier 2 | Partner agreement | Partner API key in `X-EVIE-Partner-Key` header or MCP metadata | Registered AI platform partners |
-| Tier 3 | NPI-verified or sponsor token | JWT bearer token in `Authorization` header | NPI-verified HCPs (via platform) or sponsor auth token holders |
+| Tier | Access Level | Auth Mechanism (Path A: HCP OAuth) | Auth Mechanism (Path B: Partner) |
+|------|-------------|-------------------------------------|----------------------------------|
+| Tier 1 | Open | N/A (HCP OAuth always authenticates) | None — any MCP client |
+| Tier 2 | Partner agreement / HCP verified | HCP with `max_tier_access >= 'tier2'` in `hcp_profiles` | Partner API key in `X-EVIE-Partner-Key` header |
+| Tier 3 | NPI-verified or sponsor token | HCP with `max_tier_access = 'tier3'` in `hcp_profiles` | JWT bearer token in `Authorization` header |
 
-### 5.2 Auth Flow
+### 5.2 Unified CallerContext
+
+Both auth paths produce the same `CallerContext` dataclass consumed by all tool functions:
+
+```python
+@dataclass
+class CallerContext:
+    auth_mode: str          # "hcp_oauth" | "partner_key" | "partner_jwt" | "anonymous"
+    max_tier: int           # 1, 2, or 3
+    audience_type: str      # "hcp" | "payer" | "patient" | "msl"
+    partner_name: str       # Partner identifier or "direct_hcp"
+    # HCP OAuth fields (populated only for auth_mode="hcp_oauth")
+    hcp_user_id: str | None = None      # Supabase auth.uid()
+    supabase_jwt: str | None = None     # Per-user JWT for RLS
+    npi: str | None = None
+    # Partner fields (populated only for partner auth modes)
+    sponsor_id: str | None = None
+```
+
+### 5.3 Auth Flow — Dual Resolver
 
 ```python
 def resolve_caller_tier(request_context) -> CallerContext:
     """
-    Determine the maximum tier the caller can access.
-    Returns CallerContext with partner_name, audience_type, max_tier.
+    Resolve caller identity from request context.
+    Tries HCP OAuth first, then partner auth, then anonymous.
     """
-    # 1. Check for Tier 3 JWT (NPI or sponsor token)
+    # 1. Check for HCP OAuth token (EVIE-issued)
     auth_header = request_context.get("authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        claims = validate_jwt(token)  # Raises on invalid
+
+        # Try EVIE OAuth token first (HCP path)
+        hcp = try_validate_evie_token(token)
+        if hcp:
+            return CallerContext(
+                auth_mode="hcp_oauth",
+                partner_name="direct_hcp",
+                audience_type="hcp",
+                max_tier=hcp.max_tier_access,
+                hcp_user_id=hcp.user_id,
+                supabase_jwt=hcp.supabase_jwt,
+                npi=hcp.npi
+            )
+
+        # Try Tier 3 partner JWT (NPI or sponsor token)
+        claims = validate_partner_jwt(token)  # Raises on invalid
         if claims.get("credential_type") == "npi_verified":
             return CallerContext(
+                auth_mode="partner_jwt",
                 partner_name=claims["partner_name"],
                 audience_type=claims.get("audience_type", "hcp"),
                 max_tier=3,
@@ -214,6 +296,7 @@ def resolve_caller_tier(request_context) -> CallerContext:
             )
         elif claims.get("credential_type") == "sponsor_auth_token":
             return CallerContext(
+                auth_mode="partner_jwt",
                 partner_name=claims["partner_name"],
                 audience_type=claims.get("audience_type", "payer"),
                 max_tier=3,
@@ -226,6 +309,7 @@ def resolve_caller_tier(request_context) -> CallerContext:
         partner = validate_partner_key(partner_key)  # Looks up partner_access_rules
         if partner:
             return CallerContext(
+                auth_mode="partner_key",
                 partner_name=partner.partner_name,
                 audience_type=request_context.get("audience_type", "hcp"),
                 max_tier=2
@@ -233,21 +317,47 @@ def resolve_caller_tier(request_context) -> CallerContext:
 
     # 3. Default: Tier 1 (open access)
     return CallerContext(
+        auth_mode="anonymous",
         partner_name="anonymous",
         audience_type=request_context.get("audience_type", "hcp"),
         max_tier=1
     )
 ```
 
-### 5.3 Partner Access Validation
+### 5.4 HCP OAuth Flow (Path A)
 
-For Tier 2+ queries, after resolving caller tier, also check `partner_access_rules`:
+The HCP OAuth path preserves the existing Claude Connector integration:
+
+1. Claude.ai Connector initiates OAuth 2.0 Authorization Code flow
+2. EVIE serves `/authorize` → `/login` form → HCP enters email/password
+3. EVIE validates credentials against Supabase Auth → issues auth code
+4. Claude exchanges auth code for EVIE access token
+5. Subsequent MCP tool calls include EVIE token in `Authorization: Bearer <token>`
+6. `resolve_caller_tier()` validates the EVIE token, looks up `hcp_profiles` for tier access
+7. Database queries use `SUPABASE_ANON_KEY` + per-user Supabase JWT with RLS enforcement
+
+**OAuth endpoints (mounted on same service):**
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /authorize` | OAuth authorization endpoint |
+| `POST /authorize` | Process login form submission |
+| `POST /token` | Exchange auth code for access token |
+| `GET /login` | Login form (HTML) |
+| `GET /.well-known/oauth-authorization-server` | OAuth metadata discovery (RFC 8414) |
+
+### 5.5 Partner Access Validation (Path B)
+
+For Tier 2+ partner queries, after resolving caller tier, also check `partner_access_rules`:
 
 ```python
 def validate_partner_access(caller: CallerContext, trial_id: str) -> bool:
     """
     Check if this partner has permission for this trial's indication at their tier.
+    Only applies to partner auth paths (not HCP OAuth — HCP access is RLS-enforced).
     """
+    if caller.auth_mode == "hcp_oauth":
+        return True  # RLS handles access control for HCP path
+
     rules = db.query(partner_access_rules).filter(
         partner_name=caller.partner_name,
         sponsor_id=trial.sponsor_id
@@ -722,9 +832,10 @@ evie-mcp-server/
 │   └── models.py                # Pydantic models for DB rows
 ├── auth/
 │   ├── __init__.py
-│   ├── resolver.py              # resolve_caller_tier() — shared by MCP + REST
-│   ├── jwt_validator.py         # JWT validation for Tier 3
-│   └── partner_keys.py          # Partner API key validation
+│   ├── resolver.py              # resolve_caller_tier() — dual-path resolver shared by MCP + REST
+│   ├── hcp_oauth.py             # HCP OAuth flow: /authorize, /login, /token endpoints + EVIE token validation
+│   ├── jwt_validator.py         # JWT validation for Tier 3 partner tokens
+│   └── partner_keys.py          # Partner API key validation for Tier 2
 ├── tools/
 │   ├── __init__.py
 │   ├── internal.py              # Shared internal functions (called by MCP tools + REST routes)
@@ -765,19 +876,26 @@ from mcp.server.fastmcp import FastMCP
 from tools.core import register_core_tools
 from tools.hcp import register_hcp_tools
 from tools.payer import register_payer_tools
+from auth.hcp_oauth import oauth_app          # HCP OAuth endpoints
+from rest.app import rest_app                  # REST wrapper for ChatGPT Apps
 from transport.health import health_app
 from config import settings
 
 mcp = FastMCP(
     name="evie-mcp-server",
-    version="1.0.0",
-    description="EVIE Evidence Intelligence Engine — governed pharmaceutical evidence for AI platform partners"
+    version="2.0.0",
+    description="EVIE Evidence Intelligence Engine — governed pharmaceutical evidence for AI platform partners and HCPs"
 )
 
 # Register all tools
 register_core_tools(mcp)
 register_hcp_tools(mcp)
 register_payer_tools(mcp)
+
+# Mount OAuth endpoints for HCP auth path
+mcp.mount_app(oauth_app, path="/oauth")  # /authorize, /token, /login
+# Mount REST wrapper for ChatGPT Apps
+mcp.mount_app(rest_app, path="/api")     # /api/v1/...
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http", host=settings.HOST, port=settings.PORT)
@@ -862,16 +980,31 @@ def register_core_tools(mcp: FastMCP):
 
 ## 9. Error Handling
 
-| Scenario | HTTP / MCP Error | Response |
-|----------|------------------|----------|
-| Tier insufficient | JSON-RPC error -32001 | `{ "error": "Evidence tier requires NPI verification or sponsor auth token.", "code": "TIER_INSUFFICIENT" }` |
-| Partner not authorized | JSON-RPC error -32002 | `{ "error": "Partner not authorized for this indication/tier.", "code": "PARTNER_UNAUTHORIZED" }` |
-| Invalid JWT | JSON-RPC error -32003 | `{ "error": "Invalid or expired authentication token.", "code": "AUTH_INVALID" }` |
-| Trial not found | JSON-RPC error -32004 | `{ "error": "Trial not found.", "code": "TRIAL_NOT_FOUND" }` |
-| No evidence matches | Success (empty array) | `{ "evidence": [], "metadata": { "evidence_count": 0 } }` — empty results are NOT errors |
-| Database connection failed | JSON-RPC error -32000 | `{ "error": "Service temporarily unavailable.", "code": "SERVICE_UNAVAILABLE" }` |
-| Invalid audience_type | JSON-RPC error -32602 | `{ "error": "Invalid audience_type. Must be: hcp, payer, patient, msl", "code": "INVALID_PARAMS" }` |
-| Invalid object_class | JSON-RPC error -32602 | `{ "error": "Invalid object_class.", "code": "INVALID_PARAMS" }` |
+Error responses use a **merged format** that preserves backward compatibility with existing consumers while adding the PRD's structured error codes. Both the legacy `error`/`message` shape and the new `code` field are included:
+
+```json
+{
+  "error": "TIER_INSUFFICIENT",
+  "message": "Evidence tier requires NPI verification or sponsor auth token.",
+  "code": "TIER_INSUFFICIENT",
+  "jsonrpc_code": -32001
+}
+```
+
+| Scenario | JSON-RPC Code | Error Code | Message |
+|----------|---------------|------------|---------|
+| Tier insufficient | -32001 | `TIER_INSUFFICIENT` | "Evidence tier requires NPI verification or sponsor auth token." |
+| Partner not authorized | -32002 | `PARTNER_UNAUTHORIZED` | "Partner not authorized for this indication/tier." |
+| Invalid JWT / OAuth token | -32003 | `AUTH_INVALID` | "Invalid or expired authentication token." |
+| HCP not verified | -32003 | `AUTH_INVALID` | "HCP profile not found or not verified." |
+| Trial not found | -32004 | `TRIAL_NOT_FOUND` | "Trial not found." |
+| No evidence matches | Success | N/A | `{ "evidence": [], "metadata": { "evidence_count": 0 } }` — empty results are NOT errors |
+| Database connection failed | -32000 | `SERVICE_UNAVAILABLE` | "Service temporarily unavailable." |
+| Invalid audience_type | -32602 | `INVALID_PARAMS` | "Invalid audience_type. Must be: hcp, payer, patient, msl" |
+| Invalid object_class | -32602 | `INVALID_PARAMS` | "Invalid object_class." |
+| OAuth flow error | -32003 | `AUTH_INVALID` | "OAuth authorization failed." |
+
+**Implementation:** The `_error_response()` helper returns both legacy and new fields. Existing consumers can parse `error` + `message`; new consumers can use the structured `code` field.
 
 ---
 
@@ -963,23 +1096,34 @@ Claude Connector and ChatGPT Apps are the **priority integration targets** — t
 | Integration Type | MCP Connector — Claude.ai natively supports MCP server connections |
 | Transport | Streamable HTTP (native MCP — zero translation layer) |
 | Server URL | `evie-mcp-server-production.up.railway.app/mcp` |
-| Auth (Tier 1–2) | No auth required — Claude users query Tier 1–2 evidence immediately |
-| Auth (Tier 3) | JWT bearer token injected via Claude Connector config |
+| Auth (Primary) | **HCP OAuth 2.0** — individual HCP login via EVIE OAuth flow. Claude Connector completes full OAuth handshake. Database queries use per-user JWT with RLS enforcement. |
+| Auth (Alternative) | Partner API key or JWT for machine-to-machine access (Tier 1–3) |
 | Tool Discovery | Automatic via MCP `tools/list` — Claude discovers all EVIE tools at connection time |
 
 **Why Claude Connector is the ideal first integration:**
 - Native MCP — the EVIE MCP server IS a Claude Connector endpoint, as-is, with zero adapter code
+- HCP OAuth provides **individual user identity** — the strongest auth model, enabling per-HCP tier access and audit trails tied to specific clinicians
 - Context Envelope fields (`interpretation_guardrails`, `safety_statement`, `fair_balance_text`) land directly in Claude's context window, constraining response generation by design
 - Evidence badges and cross-trial comparison policies become part of Claude's reasoning chain — compliance works at the inference layer, not just the rendering layer
-- The existing Railway deployment already works as a Claude Connector
+- The existing Railway deployment already works as a Claude Connector with OAuth
+
+**Claude Connector OAuth flow:**
+1. Claude.ai initiates OAuth via `/.well-known/oauth-authorization-server` metadata
+2. EVIE redirects to `/login` → HCP enters email/password
+3. Supabase Auth validates credentials → EVIE issues auth code
+4. Claude exchanges code for EVIE access token via `/token`
+5. All subsequent MCP calls include `Authorization: Bearer <evie_token>`
+6. EVIE resolves to specific HCP → RLS-enforced queries
 
 **Integration steps:**
-1. Register EVIE MCP server URL as a Claude Connector (direct URL or Connectors marketplace)
-2. Configure metadata: name "EVIE Evidence Intelligence", description, icon
-3. Test all 5 v1.0 core tools via Claude.ai chat
-4. Validate Context Envelopes constrain Claude's clinical responses
-5. Validate patient ceiling (patient queries → Tier 1 only, lay-language badges)
-6. Validate `audience_query_log` entries appear for Claude queries
+1. Register EVIE MCP server URL as a Claude Connector with OAuth configuration
+2. Configure OAuth: authorization URL, token URL, client credentials
+3. Configure metadata: name "EVIE Evidence Intelligence", description, icon
+4. Test HCP login flow end-to-end via Claude.ai
+5. Test all 5 v1.0 core tools via Claude.ai chat
+6. Validate Context Envelopes constrain Claude's clinical responses
+7. Validate patient ceiling (patient queries → Tier 1 only, lay-language badges)
+8. Validate `audience_query_log` entries appear for Claude queries with HCP identity
 
 **Claude Connector test prompts:**
 ```
@@ -1108,8 +1252,8 @@ async def rest_get_evidence(request: EvidenceRequest, caller = Depends(resolve_c
 
 | Partner | Type | Transport | Auth | Default Audience | Tier | Status |
 |---------|------|-----------|------|------------------|------|--------|
-| **Claude Connector** | MCP native | Streamable HTTP | None (T1–2) / JWT (T3) | hcp | 1–3 | **Alpha-ready** |
-| **ChatGPT Apps** | REST wrapper | OpenAPI HTTP | API key (T2) / OAuth (T3) | hcp | 1–3 | **Requires REST wrapper (Phase 10)** |
+| **Claude Connector** | MCP native | Streamable HTTP | **HCP OAuth** (primary) / Partner key (alternative) | hcp | 1–3 | **Alpha-ready** |
+| **ChatGPT Apps** | REST wrapper | OpenAPI HTTP | API key (T2) / OAuth (T3) | hcp | 1–3 | **Requires REST wrapper (Phase 9) + GPT config (Phase 12)** |
 | OpenEvidence | MCP native | Streamable HTTP | Partner key (T2) / JWT (T3) | hcp | 1–3 | Target: Beta |
 | Epic CDS | MCP or FHIR bridge | Streamable HTTP | Partner key + SMART-on-FHIR | hcp | 1–2 | Target: Beta |
 | Doximity | MCP native | Streamable HTTP | Partner key (T2) / NPI JWT (T3) | hcp | 1–3 | Target: Beta |
@@ -1122,17 +1266,19 @@ async def rest_get_evidence(request: EvidenceRequest, caller = Depends(resolve_c
 
 | Phase | What to Build | Success Criteria |
 |-------|---------------|------------------|
-| **1. Scaffold** | FastMCP server, Supabase client, `/health` endpoint, Docker, Railway deploy | Health check passes on Railway |
-| **2. Core Read** | `list_trials`, `get_trial_summary` — read-only, no auth | Tools return data from Supabase |
-| **3. Evidence Retrieval** | `get_evidence` with tier filtering, audience routing, envelope injection, badge enforcement | Tier 1 evidence returned with full envelopes |
-| **4. Auth** | Partner key validation (Tier 2), JWT validation (Tier 3), patient ceiling | Tier 2/3 access control works |
-| **5. Audit** | `audience_query_log` INSERT on every tool call | Log entries appear in Supabase |
-| **6. Detail + Safety** | `get_evidence_detail` with hierarchy children, `get_safety_data` | Complete v1.0 tool suite |
-| **7. Claude Connector** | Register on Claude.ai; test all 5 v1.0 tools via Claude chat; validate envelopes in Claude responses | Claude users can query EVIE evidence with governance |
-| **8. HCP Suite** | `compare_products`, `get_subgroup_evidence`, `check_stopping_rule`, `get_dosing_guidance`, `get_adherence_data` | HCP tools with cross-trial policy injection |
-| **9. Payer Suite** | `run_eligibility_screener`, `get_pa_criteria`, `get_budget_impact_summary`, `get_formulary_comparison`, `get_step_therapy_rules` | Payer tools operational |
-| **10. ChatGPT REST Wrapper** | FastAPI REST wrapper, OpenAPI spec generation, Custom GPT creation + Actions config | ChatGPT users can query EVIE evidence |
-| **11. Harden** | Error handling, input validation, rate limiting, connection pooling, logging | Production-ready |
+| **1. Scaffold** | FastMCP server, dual-mode Supabase client (`db/client.py`), `/health` endpoint, Docker, Railway deploy, PRD module structure (`db/`, `auth/`, `tools/`, `compliance/`, `rest/`, `transport/`) | Health check passes on Railway; module structure matches PRD layout |
+| **2. Schema** | Clean-slate schema rewrite (3 tiers, audience_routing, evidence_badge, hierarchy, audit log table). New seed data with Wegovy pilot dataset. | All tables created; seed data loads; schema matches PRD spec |
+| **3. Core Read** | `list_trials`, `get_trial_summary` — read-only, anonymous access via service_role | Tools return data from Supabase with PRD response envelope |
+| **4. Evidence Retrieval** | `get_evidence` with tier filtering, audience routing, envelope injection, badge enforcement, PRD response envelope | Tier 1 evidence returned with full envelopes in `{ evidence, metadata, compliance }` format |
+| **5. Dual Auth** | Partner key validation (Tier 2), partner JWT validation (Tier 3), HCP OAuth flow (preserve existing), dual `CallerContext` resolver, patient ceiling | Both auth paths produce `CallerContext`; Tier 2/3 access control works; HCP OAuth login flow works |
+| **6. Compliance** | Full compliance module: `envelope.py`, `badge.py`, `comparison_policy.py`, `audit.py`. `audience_query_log` INSERT on every tool call. | Badge enforcement, patient lay-language mapping, cross-trial policy injection, audit logging all operational |
+| **7. Detail + Safety** | `get_evidence_detail` with hierarchy children, `get_safety_data` | Complete v1.0 tool suite |
+| **8. Claude Connector** | Register on Claude.ai with HCP OAuth config; test all 5 v1.0 tools via Claude chat; validate OAuth login + RLS-enforced queries + envelopes in Claude responses | Claude users authenticate via OAuth and query EVIE evidence with governance |
+| **9. REST Wrapper** | FastAPI REST wrapper (`rest/`), OpenAPI spec generation, shared internal functions (`tools/internal.py`), REST auth middleware | REST endpoints return identical results to MCP tools; OpenAPI spec auto-generated |
+| **10. HCP Suite** | `compare_products`, `get_subgroup_evidence`, `check_stopping_rule`, `get_dosing_guidance`, `get_adherence_data` | HCP tools with cross-trial policy injection |
+| **11. Payer Suite** | `run_eligibility_screener`, `get_pa_criteria`, `get_budget_impact_summary`, `get_formulary_comparison`, `get_step_therapy_rules` | Payer tools operational |
+| **12. ChatGPT Apps** | Custom GPT creation + Actions config pointing to REST wrapper | ChatGPT users can query EVIE evidence |
+| **13. Harden** | Error handling (merged format), input validation, rate limiting, connection pooling, logging | Production-ready |
 
 ---
 
@@ -1140,22 +1286,26 @@ async def rest_get_evidence(request: EvidenceRequest, caller = Depends(resolve_c
 
 The MCP server is complete when:
 
-1. ✅ `GET /health` returns `{ "status": "ok" }` on Railway
-2. ✅ All 5 v1.0 core tools return correct evidence from Supabase
+1. ✅ `GET /health` returns `{ "status": "ok", "tools": N, "db": "connected" }` on Railway
+2. ✅ All 5 v1.0 core tools return correct evidence from Supabase in PRD response envelope format (`{ evidence, metadata, compliance }`)
 3. ✅ Every evidence response includes a Context Envelope — no exceptions
 4. ✅ Every evidence response includes `evidence_badge` — no exceptions
-5. ✅ Tier 1 queries work without any auth
-6. ✅ Tier 2 queries require and validate partner API key
-7. ✅ Tier 3 queries require and validate JWT (NPI or sponsor token)
-8. ✅ Patient audience queries are capped at Tier 1 with lay-language badges
-9. ✅ Audience routing filters evidence correctly (HCP evidence not in payer responses)
-10. ✅ `compare_products` injects cross-trial comparison policy from all relevant envelopes
-11. ✅ Dark data (dark_data_flag=true) only returned at Tier 3 with proper auth
-12. ✅ `audience_query_log` populated for every tool call
-13. ✅ MCP query latency < 2 seconds (p95) for `get_evidence`
-14. ✅ **Claude Connector:** Claude.ai can connect to EVIE MCP server and call all tools; Context Envelopes appear in Claude's clinical responses; evidence badges referenced in Claude reasoning
-15. ✅ **ChatGPT Apps:** Custom GPT can call all EVIE tools via REST wrapper; OpenAPI spec auto-generated; envelope fields appear in ChatGPT responses
-16. ✅ REST wrapper (`/api/v1/`) returns identical results to MCP transport for all tools
+5. ✅ **Path B:** Tier 1 queries work without any auth (anonymous partner access)
+6. ✅ **Path B:** Tier 2 queries require and validate partner API key
+7. ✅ **Path B:** Tier 3 queries require and validate JWT (NPI or sponsor token)
+8. ✅ **Path A:** HCP OAuth login flow works end-to-end (authorize → login → token exchange)
+9. ✅ **Path A:** HCP queries use per-user JWT with RLS enforcement; tier access matches `hcp_profiles.max_tier_access`
+10. ✅ **Dual auth:** Both auth paths produce valid `CallerContext` and tool results are identical regardless of auth path
+11. ✅ Patient audience queries are capped at Tier 1 with lay-language badges
+12. ✅ Audience routing filters evidence correctly (HCP evidence not in payer responses)
+13. ✅ `compare_products` injects cross-trial comparison policy from all relevant envelopes
+14. ✅ Dark data (dark_data_flag=true) only returned at Tier 3 with proper auth
+15. ✅ `audience_query_log` populated for every tool call (includes HCP identity when available)
+16. ✅ MCP query latency < 2 seconds (p95) for `get_evidence`
+17. ✅ **Claude Connector:** Claude.ai can connect via HCP OAuth and call all tools; Context Envelopes appear in Claude's clinical responses; evidence badges referenced in Claude reasoning
+18. ✅ **ChatGPT Apps:** Custom GPT can call all EVIE tools via REST wrapper; OpenAPI spec auto-generated; envelope fields appear in ChatGPT responses
+19. ✅ REST wrapper (`/api/v1/`) returns identical results to MCP transport for all tools
+20. ✅ Error responses include both legacy `error`/`message` fields and PRD `code` field
 
 ---
 
@@ -1178,3 +1328,24 @@ The MCP server is complete when:
 **patient badge mapping:** `green` → "strong evidence" | `amber` → "moderate evidence" | `red` → "limited evidence"
 
 **JSON-RPC error codes:** `-32000` (service unavailable) | `-32001` (tier insufficient) | `-32002` (partner unauthorized) | `-32003` (auth invalid) | `-32004` (not found) | `-32602` (invalid params)
+
+---
+
+## 15. Architecture Decisions Record
+
+The following decisions were made on 2026-03-19 to resolve conflicts between the original PRD (v1.0) and the existing codebase. These decisions are incorporated throughout this document (v2.0).
+
+| # | Area | Decision | Rationale |
+|---|------|----------|-----------|
+| 1 | **Authentication** | Dual auth — support both HCP OAuth + partner API keys | Preserves existing Claude Connector HCP login while enabling PRD's M2M partner model |
+| 2 | **Database Access** | Hybrid — RLS for HCP path, service_role for partner path | HCP path keeps database-level security; partner path uses application-level filtering |
+| 3 | **Module Structure** | PRD layout — subdirectory packages (`db/`, `auth/`, `tools/`, `compliance/`, `rest/`, `transport/`) | Full modular reorganization for separation of concerns |
+| 4 | **Response Format** | PRD envelope — breaking change (`{ evidence, metadata, compliance }`) | Clean break; all consumers adopt new format |
+| 5 | **Tier System** | 3 tiers (tier1–tier3) per PRD | Simplifies tier model; tier4 eliminated |
+| 6 | **Tool Signatures** | PRD signatures — breaking change (audience_type required, expanded filters) | Clean break; all tool schemas updated |
+| 7 | **REST API** | Build now — FastAPI wrapper alongside MCP | Enables ChatGPT Apps integration from day one |
+| 8 | **Compliance** | Full compliance module (envelope, badge, cross-trial policy, audit) | Non-negotiable invariants fully implemented |
+| 9 | **Error Handling** | Merged — current shape + PRD `code` field | Backward-compatible for existing consumers |
+| 10 | **Audience Routing** | Full implementation (column, param, patient ceiling, lay-language badges) | First-class audience concept across all tools |
+| 11 | **Schema Migration** | Clean slate — rewrite schema from scratch | Avoids complex ALTER TABLE migrations; fresh start |
+| 12 | **Entry Point** | PRD — root `server.py` (`python server.py`) | Matches PRD layout; simpler deployment |
