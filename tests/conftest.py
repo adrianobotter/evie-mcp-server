@@ -6,6 +6,8 @@ import pytest
 # Set required env vars before any EVIE module imports
 os.environ.setdefault("SUPABASE_URL", "https://test-project.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "test-anon-key")
+os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
+os.environ.setdefault("EVIE_TOKEN_SECRET", "test-token-secret")
 
 
 @pytest.fixture
