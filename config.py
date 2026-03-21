@@ -35,17 +35,33 @@ class Settings:
         default_factory=lambda: [
             "SUPABASE_URL",
             "SUPABASE_ANON_KEY",
+        ],
+        repr=False,
+    )
+
+    # Warn but don't crash if these are missing (needed for full functionality)
+    _RECOMMENDED: list[str] = field(
+        default_factory=lambda: [
             "SUPABASE_SERVICE_ROLE_KEY",
         ],
         repr=False,
     )
 
     def validate(self) -> None:
-        """Fail fast on missing required vars."""
+        """Fail fast on missing required vars, warn on missing recommended."""
+        import logging
+
         missing = [k for k in self._REQUIRED if not getattr(self, k)]
         if missing:
             raise RuntimeError(
                 f"Missing required environment variables: {', '.join(missing)}"
+            )
+        missing_rec = [k for k in self._RECOMMENDED if not getattr(self, k)]
+        if missing_rec:
+            logging.getLogger("evie.server").warning(
+                "Missing recommended environment variables: %s — "
+                "some features (health check DB, partner auth) will be degraded",
+                ", ".join(missing_rec),
             )
 
 

@@ -23,7 +23,7 @@ from transport.health import health_check
 
 # --- Logging ------------------------------------------------------------------
 
-from src.evie.logging import setup_logging, server_log
+from logging_config import setup_logging, server_log
 
 setup_logging()
 

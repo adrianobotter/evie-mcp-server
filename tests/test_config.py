@@ -26,21 +26,24 @@ class TestSettings:
         with pytest.raises(RuntimeError, match="SUPABASE_URL"):
             s.validate()
 
-    def test_validate_fails_on_missing_service_role_key(self):
+    def test_validate_warns_on_missing_service_role_key(self, caplog):
+        """SERVICE_ROLE_KEY is recommended, not required — warns but doesn't crash."""
+        import logging
+
         s = Settings(
             SUPABASE_URL="https://test.supabase.co",
             SUPABASE_ANON_KEY="anon-key",
             SUPABASE_SERVICE_ROLE_KEY="",
         )
-        with pytest.raises(RuntimeError, match="SUPABASE_SERVICE_ROLE_KEY"):
-            s.validate()
+        with caplog.at_level(logging.WARNING, logger="evie.server"):
+            s.validate()  # Should not raise
+        assert "SUPABASE_SERVICE_ROLE_KEY" in caplog.text
 
     def test_validate_reports_all_missing(self):
         s = Settings()
         with pytest.raises(RuntimeError, match="SUPABASE_URL") as exc_info:
             s.validate()
         assert "SUPABASE_ANON_KEY" in str(exc_info.value)
-        assert "SUPABASE_SERVICE_ROLE_KEY" in str(exc_info.value)
 
     def test_defaults(self):
         s = Settings(

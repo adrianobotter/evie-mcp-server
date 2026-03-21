@@ -38,6 +38,8 @@ def _is_auth_error(exc: Exception) -> bool:
         "role claim",
         "not authorized",
         "permission denied",
+        "401 unauthorized",
+        "403 forbidden",
     )
     if any(phrase in msg for phrase in auth_phrases):
         return True
